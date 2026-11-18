@@ -1,0 +1,55 @@
+# Drives the real binary with no display: new, check, render, and failures.
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}")
+set(ENV{QT_QPA_PLATFORM} "")
+
+function(run expected)
+  execute_process(COMMAND ${DOLE} ${ARGN} WORKING_DIRECTORY "${WORK}"
+                  RESULT_VARIABLE code OUTPUT_VARIABLE out ERROR_VARIABLE err)
+  if(NOT code EQUAL expected)
+    message(FATAL_ERROR "dole ${ARGN} exited ${code}, not ${expected}\n${out}\n${err}")
+  endif()
+  set(out "${out}" PARENT_SCOPE)
+  set(err "${err}" PARENT_SCOPE)
+endfunction()
+
+run(0)
+if(NOT out MATCHES "render <song>")
+  message(FATAL_ERROR "bare dole should print help:\n${out}")
+endif()
+
+run(0 new song.dole --json)
+run(1 new song.dole)
+if(NOT err MATCHES "already exists")
+  message(FATAL_ERROR "new over a file should refuse:\n${err}")
+endif()
+
+run(0 check song.dole --json)
+if(NOT out MATCHES "\"ok\": true" OR NOT out MATCHES "\"bpm\": 92")
+  message(FATAL_ERROR "check --json:\n${out}")
+endif()
+
+run(0 render song.dole -o song.wav --json)
+if(NOT EXISTS "${WORK}/song.wav")
+  message(FATAL_ERROR "render wrote no WAV")
+endif()
+run(0 render song.dole -o loop.wav --pattern B --bars 2)
+
+file(WRITE "${WORK}/bad.dole" "{\"dole\": 1, \"patterns\": {\"A\": {\"kick\": \"x..\"}}}")
+run(1 check bad.dole)
+if(NOT err MATCHES "needs 16 steps")
+  message(FATAL_ERROR "check should say what's wrong:\n${err}")
+endif()
+
+file(WRITE "${WORK}/missing.dole" "{\"dole\": 1, \"tracks\": {\"kick\": {\"sample\": \"nope.wav\"}}}")
+run(1 check missing.dole --json)
+if(NOT out MATCHES "nope.wav")
+  message(FATAL_ERROR "check should report the missing sample:\n${out}")
+endif()
+
+run(0 help format)
+if(NOT out MATCHES "The .dole song format")
+  message(FATAL_ERROR "help format:\n${out}")
+endif()
+run(0 skill)
+run(0 --version)

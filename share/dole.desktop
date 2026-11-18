@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Dole
+Comment=Make loops: drums and a bassline, chained into a song
+Comment[da]=Lav loops: trommer og en baslinje, sat sammen til en sang
+Comment[de]=Loops bauen: Drums und eine Basslinie, zu einem Song verkettet
+Comment[nl]=Maak loops: drums en een baslijn, aan elkaar geregen tot een nummer
+Exec=dole open %f
+Icon=dole
+Terminal=false
+Categories=AudioVideo;Audio;Music;Midi;
+StartupWMClass=dole

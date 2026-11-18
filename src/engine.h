@@ -1,0 +1,66 @@
+#pragma once
+
+#include <QMutex>
+#include <QObject>
+#include <QThread>
+#include <memory>
+
+#include "renderer.h"
+
+// What the interface asks of the sound: play, stop, and hear the song as it
+// changes. The real one plays through the speakers; tests use a fake that
+// records what it was asked.
+class Engine : public QObject {
+    Q_OBJECT
+
+public:
+    using QObject::QObject;
+
+    virtual void setSong(const Song &song) = 0;
+    virtual void setSounds(const std::array<SampleBuffer, kTracks> &sounds) = 0;
+    virtual void play(bool songMode, int pattern, int chainIndex) = 0;
+    virtual void cue(int pattern) = 0;
+    virtual void stop() = 0;
+    virtual void audition(int track, const Step &step) = 0;
+
+signals:
+    void positionChanged(int chainIndex, int pattern, int step);
+    // "noDevice", or "deviceFailed" with Qt's reason.
+    void failed(const QString &kind, const QString &detail);
+};
+
+// Plays through the default audio output, rendering on a thread of its own so
+// the interface never makes it stutter. The output opens the first time
+// anything plays, keeping Qt Multimedia out of the app's start.
+class AudioEngine : public Engine {
+    Q_OBJECT
+
+public:
+    explicit AudioEngine(QObject *parent = nullptr);
+    ~AudioEngine() override;
+
+    void setSong(const Song &song) override;
+    void setSounds(const std::array<SampleBuffer, kTracks> &sounds) override;
+    void play(bool songMode, int pattern, int chainIndex) override;
+    void cue(int pattern) override;
+    void stop() override;
+    void audition(int track, const Step &step) override;
+    // Opens the output ahead of the first Space, which would otherwise wait
+    // most of a second for it. It opens on the audio thread, so the window
+    // never waits.
+    void prepare() { open(); }
+
+    // The renderer, shared with the audio thread under its lock.
+    struct Shared {
+        QMutex mutex;
+        Renderer renderer;
+    };
+
+private:
+    void open();
+
+    std::shared_ptr<Shared> m_shared = std::make_shared<Shared>();
+    QThread m_thread;
+    QObject *m_output = nullptr; // lives on m_thread
+    bool m_opened = false;
+};

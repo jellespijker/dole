@@ -1,0 +1,267 @@
+// The command line follows Hype's (MIT, David Heinemeier Hansson).
+#include "cli.h"
+
+#include <QCommandLineParser>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <cstdio>
+
+#include "renderer.h"
+#include "song.h"
+#include "sounds.h"
+#include "wav.h"
+
+namespace {
+
+void print(FILE *stream, const QString &text) {
+    fprintf(stream, "%s\n", qPrintable(text));
+}
+
+void print(const QJsonObject &object) {
+    fprintf(stdout, "%s", QJsonDocument(object).toJson().constData());
+}
+
+int fail(const QString &message) {
+    print(stderr, message);
+    return 1;
+}
+
+struct Command {
+    QCommandLineParser parser;
+    Command(const QString &name, const QString &description, bool song = true) {
+        parser.setApplicationDescription(description);
+        parser.addHelpOption();
+        parser.addPositionalArgument(name, description, name);
+        if (song)
+            parser.addPositionalArgument("song", "A .dole song file", "<song>");
+    }
+    void json() { parser.addOption({"json", "Print the result as JSON"}); }
+    bool wantsJson() const { return parser.isSet("json"); }
+    QString argument(int index) const { return parser.positionalArguments().value(index); }
+};
+
+double seconds(const Song &song, int bars) {
+    return bars * kSteps * 60.0 / song.bpm / 4.0;
+}
+
+// Loads the song and decodes its samples; a problem anywhere is an error.
+bool load(const QString &path, Song *song, std::array<SampleBuffer, kTracks> *sounds, QStringList *problems) {
+    if (path.isEmpty()) {
+        *problems << "Name a .dole song file.";
+        return false;
+    }
+    QString error;
+    if (!loadSong(path, song, &error)) {
+        *problems << path + ": " + error;
+        return false;
+    }
+    for (int t = 0; t < kTracks; ++t) {
+        const QString &sample = song->tracks[t].sample;
+        if (sample.isEmpty()) {
+            (*sounds)[t] = builtInSound(t);
+            continue;
+        }
+        (*sounds)[t] = decodeSample(sample, &error);
+        if (!(*sounds)[t])
+            *problems << QString("Track %1: %2: %3")
+                             .arg(trackIds()[t], sample, error == kNoFfmpeg ? "ffmpeg is not installed" : error);
+    }
+    return problems->isEmpty();
+}
+
+int create(const QStringList &arguments) {
+    Command command("new", "Start a song: a short demo groove, or with --empty nothing at all.");
+    command.parser.addOption({"empty", "Start with no steps"});
+    command.json();
+    command.parser.process(arguments);
+    const QString path = command.argument(1);
+    if (path.isEmpty())
+        return fail("Name the song file to create, such as song.dole.");
+    if (QFileInfo::exists(path))
+        return fail(path + " already exists; leaving it alone.");
+    QString error;
+    if (!saveSong(path, command.parser.isSet("empty") ? Song{} : demoSong(), &error))
+        return fail(path + ": " + error);
+    if (command.wantsJson())
+        print({{"song", QFileInfo(path).absoluteFilePath()}});
+    else
+        print(stdout, "Created " + path);
+    return 0;
+}
+
+int check(const QStringList &arguments) {
+    Command command("check", "Check a song and its samples, and summarize it.");
+    command.json();
+    command.parser.process(arguments);
+    Song song;
+    std::array<SampleBuffer, kTracks> sounds;
+    QStringList problems;
+    const bool ok = load(command.argument(1), &song, &sounds, &problems);
+
+    QStringList used;
+    for (int p = 0; p < kPatterns; ++p)
+        if (!song.patterns[p].isEmpty())
+            used << patternName(p);
+    QStringList chain;
+    for (int p : song.chain)
+        chain << patternName(p);
+    QStringList warnings;
+    for (int p : song.chain)
+        if (song.patterns[p].isEmpty() && !warnings.contains("Pattern " + patternName(p) + " is empty."))
+            warnings << "Pattern " + patternName(p) + " is empty.";
+    if (song.chain.isEmpty())
+        warnings << "The song chain is empty; render plays pattern A once.";
+    const int bars = song.chain.isEmpty() ? 1 : int(song.chain.size());
+
+    if (command.wantsJson()) {
+        QJsonObject result{{"ok", ok},
+                           {"errors", QJsonArray::fromStringList(problems)},
+                           {"warnings", QJsonArray::fromStringList(ok ? warnings : QStringList())}};
+        if (ok) {
+            result.insert("bpm", song.bpm);
+            result.insert("swing", song.swing);
+            result.insert("patterns", QJsonArray::fromStringList(used));
+            result.insert("song", QJsonArray::fromStringList(chain));
+            result.insert("bars", bars);
+            result.insert("seconds", qRound(seconds(song, bars) * 10) / 10.0);
+        }
+        print(result);
+    } else {
+        for (const QString &problem : problems)
+            print(stderr, "error: " + problem);
+        if (ok) {
+            for (const QString &warning : warnings)
+                print(stdout, "warning: " + warning);
+            print(stdout, QString("%1 BPM, swing %2%, patterns %3, song %4 (%5 bars, %6 s)")
+                              .arg(song.bpm)
+                              .arg(song.swing)
+                              .arg(used.isEmpty() ? "none" : used.join(" "), chain.isEmpty() ? "empty" : chain.join(" "))
+                              .arg(bars)
+                              .arg(seconds(song, bars), 0, 'f', 1));
+        }
+    }
+    return ok ? 0 : 1;
+}
+
+int render(const QStringList &arguments) {
+    Command command("render", "Render a song to a 16-bit stereo WAV file.");
+    command.parser.addOption({{"o", "output"}, "The WAV file to write", "file"});
+    command.parser.addOption({"pattern", "Render one pattern instead of the song", "letter"});
+    command.parser.addOption({"bars", "With --pattern, how many times to play it (1)", "count", "1"});
+    command.json();
+    command.parser.process(arguments);
+    const QString output = command.parser.value("output");
+    if (output.isEmpty())
+        return fail("Name the WAV file to write with -o.");
+
+    Song song;
+    std::array<SampleBuffer, kTracks> sounds;
+    QStringList problems;
+    if (!load(command.argument(1), &song, &sounds, &problems)) {
+        for (const QString &problem : problems)
+            print(stderr, problem);
+        return 1;
+    }
+    if (command.parser.isSet("pattern")) {
+        const int pattern = patternIndex(command.parser.value("pattern"));
+        const int bars = command.parser.value("bars").toInt();
+        if (pattern < 0)
+            return fail("--pattern takes a letter from A to H.");
+        if (bars < 1 || bars > kMaxChain)
+            return fail(QString("--bars takes a count from 1 to %1.").arg(kMaxChain));
+        song.chain = QVector<int>(bars, pattern);
+    }
+
+    const QVector<float> audio = renderSong(song, sounds, 0);
+    QString error;
+    if (!writeWav(output, audio, &error))
+        return fail(output + ": " + error);
+    const double length = audio.size() / 2.0 / kRate;
+    if (command.wantsJson())
+        print({{"output", QFileInfo(output).absoluteFilePath()}, {"seconds", qRound(length * 10) / 10.0}});
+    else
+        print(stdout, QString("Wrote %1 (%2 s)").arg(output).arg(length, 0, 'f', 1));
+    return 0;
+}
+
+// As Hype does: one shared copy, linked into Claude Code, found directly by Codex.
+int skill(const QStringList &arguments) {
+    Command command("skill", "Print the agent skill, or install it for your coding agents with: skill install.", false);
+    command.parser.addPositionalArgument("install", "Copy to ~/.agents/skills/dole and link into ~/.claude/skills",
+                                         "[install]");
+    command.parser.process(arguments);
+    QFile bundled(":/skill.md");
+    if (!bundled.open(QIODevice::ReadOnly))
+        return 1;
+    const QByteArray text = bundled.readAll();
+    if (command.argument(1).isEmpty()) {
+        fputs(text.constData(), stdout);
+        return 0;
+    }
+    if (command.argument(1) != "install")
+        return fail("Use dole skill to print the skill, or dole skill install.");
+    const QDir home = QDir::home();
+    const QString directory = home.filePath(".agents/skills/dole");
+    QSaveFile file(directory + "/SKILL.md");
+    if (!QDir().mkpath(directory) || !file.open(QIODevice::WriteOnly) || file.write(text) < 0 || !file.commit())
+        return fail("Could not write " + file.fileName());
+    print(stdout, "Installed " + file.fileName());
+    if (!home.exists(".claude"))
+        return 0;
+    const QString link = home.filePath(".claude/skills/dole");
+    const QFileInfo existing(link);
+    if (existing.isSymLink())
+        QFile::remove(link);
+    else if (existing.exists())
+        return fail(link + " exists and is not a link; leaving it alone.");
+    if (!home.mkpath(".claude/skills") || !QFile::link("../../.agents/skills/dole", link))
+        return fail("Could not link " + link);
+    print(stdout, "Linked " + link);
+    return 0;
+}
+
+int help(const QStringList &arguments) {
+    const QString topic = arguments.value(2);
+    if (topic == "format") {
+        QFile guide(":/format.md");
+        if (!guide.open(QIODevice::ReadOnly))
+            return 1;
+        fputs(guide.readAll().constData(), stdout);
+        return 0;
+    }
+    if (isCliCommand(topic) && topic != "help")
+        return runCli({arguments[0], topic, "--help"});
+    print(stdout, "Usage: dole <command> [options]\n\n" + cliSummary());
+    return 0;
+}
+
+} // namespace
+
+QString cliSummary() {
+    return "Sequencer:\n"
+           "  open [song]                   Open the window, on a song or a demo groove\n\n"
+           "Commands that need no display (dole help <command> for options):\n"
+           "  new <song>                    Start a song file\n"
+           "  check <song>                  Report every problem, and summarize the song\n"
+           "  render <song> -o <file.wav>   Render the song, or one pattern, to WAV\n"
+           "  help format                   How a .dole song file is written\n"
+           "  skill [install]               Print the skill for coding agents, or install it";
+}
+
+bool isCliCommand(const QString &word) {
+    return QStringList{"new", "check", "render", "skill", "help"}.contains(word);
+}
+
+int runCli(const QStringList &arguments) {
+    const QString command = arguments.value(1);
+    return command == "new"      ? create(arguments)
+           : command == "check"  ? check(arguments)
+           : command == "render" ? render(arguments)
+           : command == "skill"  ? skill(arguments)
+                                 : help(arguments);
+}
