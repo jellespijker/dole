@@ -17,14 +17,21 @@ public:
     using QObject::QObject;
 
     virtual void setSong(const Song &song) = 0;
-    virtual void setSounds(const std::array<SampleBuffer, kTracks> &sounds) = 0;
+    virtual void setSounds(const std::array<SampleBuffer, kPads> &sounds) = 0;
     virtual void play(bool songMode, int pattern, int chainIndex) = 0;
     virtual void cue(int pattern) = 0;
     virtual void stop() = 0;
-    virtual void audition(int track, const Step &step) = 0;
+    // A pad struck live, and held for note repeat.
+    virtual void hit(int pad, int level) = 0;
+    virtual void hold(int pad, bool held, int level) = 0;
+    virtual void setRepeat(int division) = 0;
+    virtual void suppress(int pad, int pattern, int step) = 0;
+    virtual void preview(const SampleBuffer &sound, double rate) = 0;
 
 signals:
     void positionChanged(int chainIndex, int pattern, int step);
+    // Note repeat played a held pad on the step nearest.
+    void repeated(int pad, int pattern, int step);
     // "noDevice", or "deviceFailed" with Qt's reason.
     void failed(const QString &kind, const QString &detail);
 };
@@ -40,11 +47,15 @@ public:
     ~AudioEngine() override;
 
     void setSong(const Song &song) override;
-    void setSounds(const std::array<SampleBuffer, kTracks> &sounds) override;
+    void setSounds(const std::array<SampleBuffer, kPads> &sounds) override;
     void play(bool songMode, int pattern, int chainIndex) override;
     void cue(int pattern) override;
     void stop() override;
-    void audition(int track, const Step &step) override;
+    void hit(int pad, int level) override;
+    void hold(int pad, bool held, int level) override;
+    void setRepeat(int division) override;
+    void suppress(int pad, int pattern, int step) override;
+    void preview(const SampleBuffer &sound, double rate) override;
     // Opens the output ahead of the first Space, which would otherwise wait
     // most of a second for it. It opens on the audio thread, so the window
     // never waits.

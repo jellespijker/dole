@@ -43,41 +43,71 @@ SampleBuffer render(double seconds, const std::function<float(double)> &voice) {
 
 constexpr double kTwoPi = 6.283185307179586;
 
-SampleBuffer kick() {
+double square(double phase) {
+    return std::fmod(phase, 1.0) < 0.5 ? 1 : -1;
+}
+
+double saw(double phase) {
+    return 2 * std::fmod(phase, 1.0) - 1;
+}
+
+// A deep kick that hangs, the boom of boom-bap.
+SampleBuffer boom() {
     double phase = 0;
     Noise noise;
-    return render(0.5, [=](double t) mutable {
-        // A sine dropping from about 155 Hz to 45 Hz, with a click on top.
-        phase += kTwoPi * (45 + 110 * std::exp(-t / 0.035)) / kRate;
-        const double body = std::sin(phase) * std::exp(-t / 0.16);
-        const double click = noise.next() * std::exp(-t / 0.002) * 0.3;
-        return float(std::tanh(1.6 * (body + click)));
+    Svf lp;
+    return render(0.8, [=](double t) mutable {
+        phase += kTwoPi * (42 + 95 * std::exp(-t / 0.05)) / kRate;
+        const double body = std::sin(phase) * std::exp(-t / 0.35);
+        const double click = lp.lowpass(noise.next(), 3000, 0.7) * std::exp(-t / 0.003) * 0.6;
+        return float(std::tanh(2.2 * (body + click)));
     });
 }
 
-SampleBuffer snare() {
+// A short, hard kick that knocks.
+SampleBuffer knock() {
+    double phase = 0;
     Noise noise;
-    Svf hp;
+    Svf bp;
     return render(0.35, [=](double t) mutable {
-        const double tone = std::sin(kTwoPi * 185 * t) * std::exp(-t / 0.05) * 0.5
-                            + std::sin(kTwoPi * 330 * t) * std::exp(-t / 0.03) * 0.3;
-        const double rattle = hp.highpass(noise.next(), 1500, 0.7) * std::exp(-t / 0.09) * 0.8;
-        return float(tone + rattle);
+        phase += kTwoPi * (55 + 150 * std::exp(-t / 0.02)) / kRate;
+        const double body = std::sin(phase) * std::exp(-t / 0.12);
+        const double click = bp.bandpass(noise.next(), 3000, 1.0) * std::exp(-t / 0.004) * 0.8;
+        return float(std::tanh(3.0 * (body + click)));
     });
 }
 
-// Six detuned square waves, the 808's way to a metallic hat, high-passed.
-SampleBuffer hat(double decay, double seconds) {
+// A snare that cracks: a body under a burst of bright noise, driven.
+SampleBuffer crack() {
     Noise noise;
-    Svf hp1, hp2;
-    return render(seconds, [=](double t) mutable {
-        static const double freqs[] = {205.3, 304.4, 369.6, 522.7, 540.0, 800.0};
-        double metal = 0;
-        for (double f : freqs)
-            metal += std::fmod(t * f * 2.6, 1.0) < 0.5 ? 1 : -1;
-        const double raw = metal / 6 * 0.6 + noise.next() * 0.5;
-        const double filtered = hp2.highpass(hp1.highpass(raw, 7000, 0.7), 7000, 0.7);
-        return float(filtered * std::exp(-t / decay));
+    Svf bp, hp;
+    return render(0.4, [=](double t) mutable {
+        const double tone = std::sin(kTwoPi * 200 * t) * std::exp(-t / 0.06) * 0.6
+                            + std::sin(kTwoPi * 380 * t) * std::exp(-t / 0.03) * 0.3;
+        const double n = noise.next();
+        const double rattle = bp.bandpass(n, 2500, 0.8) * std::exp(-t / 0.12)
+                              + hp.highpass(n, 6000, 0.7) * std::exp(-t / 0.04) * 0.5;
+        return float(std::tanh(2.5 * (tone + rattle)));
+    });
+}
+
+// A darker snare, as if sampled off a worn record.
+SampleBuffer dusty() {
+    Noise noise;
+    Svf lp;
+    return render(0.5, [=](double t) mutable {
+        const double tone = std::sin(kTwoPi * 160 * t) * std::exp(-t / 0.08) * 0.5;
+        const double rattle = lp.lowpass(noise.next(), 3500, 0.7) * std::exp(-t / 0.18);
+        return float(std::tanh(1.8 * (tone + rattle)));
+    });
+}
+
+SampleBuffer rim() {
+    Noise noise;
+    return render(0.08, [=](double t) mutable {
+        return float(std::sin(kTwoPi * 1700 * t) * std::exp(-t / 0.008)
+                     + std::sin(kTwoPi * 500 * t) * std::exp(-t / 0.02) * 0.5
+                     + noise.next() * std::exp(-t / 0.001) * 0.4);
     });
 }
 
@@ -94,32 +124,135 @@ SampleBuffer clap() {
     });
 }
 
-SampleBuffer rim() {
+// Six detuned square waves, the 808's way to a metallic hat, high-passed,
+// with more noise in it than an 808 has.
+SampleBuffer hat(double decay, double seconds) {
     Noise noise;
-    return render(0.08, [=](double t) mutable {
-        return float(std::sin(kTwoPi * 1700 * t) * std::exp(-t / 0.008)
-                     + std::sin(kTwoPi * 500 * t) * std::exp(-t / 0.02) * 0.5
-                     + noise.next() * std::exp(-t / 0.001) * 0.4);
+    Svf hp1, hp2;
+    return render(seconds, [=](double t) mutable {
+        static const double freqs[] = {205.3, 304.4, 369.6, 522.7, 540.0, 800.0};
+        double metal = 0;
+        for (double f : freqs)
+            metal += square(t * f * 2.6);
+        const double raw = metal / 6 * 0.5 + noise.next() * 0.7;
+        const double filtered = hp2.highpass(hp1.highpass(raw, 7000, 0.7), 7000, 0.7);
+        return float(filtered * std::exp(-t / decay));
     });
 }
 
-SampleBuffer cowbell() {
-    Svf bp;
+SampleBuffer shaker() {
+    Noise noise;
+    Svf hp;
+    return render(0.2, [=](double t) mutable {
+        const double envelope = (1 - std::exp(-t / 0.008)) * std::exp(-t / 0.07);
+        return float(hp.highpass(noise.next(), 5000, 0.7) * envelope);
+    });
+}
+
+SampleBuffer tom() {
+    double phase = 0;
+    Noise noise;
     return render(0.6, [=](double t) mutable {
-        const double squares = (std::fmod(t * 540, 1.0) < 0.5 ? 1 : -1) + (std::fmod(t * 800, 1.0) < 0.5 ? 1 : -1);
-        const double envelope = std::exp(-t / 0.05) * 0.7 + std::exp(-t / 0.3) * 0.3;
-        return float(bp.bandpass(squares, 900, 2.5) * envelope);
+        phase += kTwoPi * (95 + 60 * std::exp(-t / 0.06)) / kRate;
+        return float(std::tanh(1.5 * (std::sin(phase) * std::exp(-t / 0.25) + noise.next() * std::exp(-t / 0.01) * 0.3)));
+    });
+}
+
+SampleBuffer crash() {
+    Noise noise;
+    Svf hp;
+    return render(2.0, [=](double t) mutable {
+        double metal = 0;
+        for (double f : {311.0, 457.0, 691.0, 1033.0})
+            metal += square(t * f * 3.1);
+        const double raw = noise.next() * 0.8 + metal / 4 * 0.3;
+        return float(hp.highpass(raw, 4000, 0.7) * std::exp(-t / 0.6) * (1 - std::exp(-t / 0.002)));
+    });
+}
+
+// Steel drawn and struck, from a kung-fu film: inharmonic partials, each
+// dying at its own pace, beating against a slightly detuned twin.
+SampleBuffer clang() {
+    Noise noise;
+    Svf hp;
+    return render(1.6, [=](double t) mutable {
+        static const double partials[] = {523, 1187, 1873, 2741, 3511, 4637};
+        double ring = 0;
+        for (int k = 0; k < 6; ++k) {
+            const double decay = 1.0 / (k + 1.2);
+            ring += (std::sin(kTwoPi * partials[k] * t) + std::sin(kTwoPi * partials[k] * 1.003 * t)) * std::exp(-t / decay)
+                    / (k + 1);
+        }
+        const double strike = hp.highpass(noise.next(), 2000, 0.7) * std::exp(-t / 0.01);
+        return float(ring * 0.5 + strike);
+    });
+}
+
+// One note of a piano-ish tone: a few harmonics, a hammer, a long fade.
+double pianoNote(double t, double f) {
+    double v = 0;
+    for (int h = 1; h <= 5; ++h)
+        v += std::sin(kTwoPi * f * h * t * (1 + 0.0004 * h)) / (h * h * 0.8 + 0.2);
+    return v * std::exp(-t / 0.9) * (1 - std::exp(-t / 0.003));
+}
+
+double midiHz(double note) {
+    return 440.0 * std::pow(2.0, (note - 69) / 12);
+}
+
+// An eerie minor ninth on a detuned piano, dulled as if lifted off a record.
+SampleBuffer stab() {
+    Svf lp;
+    return render(2.0, [=](double t) mutable {
+        double chord = 0;
+        for (double note : {48.0, 51.0, 55.0, 58.0, 62.0}) // C3 Eb3 G3 Bb3 D4
+            chord += pianoNote(t, midiHz(note)) + pianoNote(t, midiHz(note + 0.12)) * 0.5;
+        return float(lp.lowpass(chord, 2600, 0.7));
+    });
+}
+
+// A bell struck in an empty temple: FM at an inharmonic ratio.
+SampleBuffer bell() {
+    return render(2.5, [](double t) {
+        const double f = midiHz(63); // Eb4
+        const double index = 3 * std::exp(-t / 0.5);
+        return float(std::sin(kTwoPi * f * t + index * std::sin(kTwoPi * f * 1.4 * t)) * std::exp(-t / 1.2)
+                     * (1 - std::exp(-t / 0.001)));
+    });
+}
+
+// A sub bass note on C2; tune the pad to play the line.
+SampleBuffer bass() {
+    return render(1.6, [](double t) {
+        const double f = midiHz(36);
+        const double tone = std::sin(kTwoPi * f * t) + 0.25 * std::sin(kTwoPi * 2 * f * t);
+        return float(std::tanh(1.5 * tone) * std::exp(-t / 0.8) * (1 - std::exp(-t / 0.005)));
+    });
+}
+
+// A minor brass stab: detuned saws through a filter that opens and shuts.
+SampleBuffer horn() {
+    Svf lp;
+    return render(0.8, [=](double t) mutable {
+        double brass = 0;
+        for (double note : {51.0, 55.0, 58.0}) // Eb3 G3 Bb3
+            for (double detune : {-0.08, 0.0, 0.07})
+                brass += saw(t * midiHz(note + detune));
+        const double cutoff = 600 + 2400 * std::exp(-t / 0.15) * (1 - std::exp(-t / 0.02));
+        const double envelope = (1 - std::exp(-t / 0.02)) * std::exp(-t / 0.35);
+        return float(std::tanh(1.2 * lp.lowpass(brass / 9, cutoff, 1.1)) * envelope);
     });
 }
 
 } // namespace
 
-SampleBuffer builtInSound(int track) {
+SampleBuffer kitSound(int pad) {
     // Made once, the first time any is asked for; static initialization is
     // thread-safe, so a command and the audio thread may both ask.
-    static const std::array<SampleBuffer, kTracks> sounds{
-        kick(), snare(), hat(0.025, 0.12), hat(0.18, 0.6), clap(), rim(), cowbell(), SampleBuffer()};
-    return track >= 0 && track < kTracks ? sounds[track] : SampleBuffer();
+    static const std::array<SampleBuffer, kPads> sounds{
+        boom(), knock(), crack(), dusty(), rim(),  clap(), hat(0.03, 0.15), hat(0.25, 0.8),
+        shaker(), tom(), crash(), clang(), stab(), bell(), bass(), horn()};
+    return pad >= 0 && pad < kPads ? sounds[pad] : SampleBuffer();
 }
 
 SampleBuffer decodeSample(const QString &path, QString *error) {
@@ -148,4 +281,25 @@ SampleBuffer decodeSample(const QString &path, QString *error) {
     auto *samples = new QVector<float>(count);
     memcpy(samples->data(), data.constData(), count * sizeof(float));
     return SampleBuffer(samples);
+}
+
+SampleBuffer slice(const SampleBuffer &sound, double start, double end) {
+    if (!sound || (start <= 0 && end <= 0))
+        return sound;
+    const qsizetype frames = sound->size() / 2;
+    const qsizetype from = qBound<qsizetype>(0, qsizetype(start * kRate), frames);
+    const qsizetype to = end > 0 ? qBound<qsizetype>(from, qsizetype(end * kRate), frames) : frames;
+    if (to - from < 2)
+        return {};
+    auto *part = new QVector<float>(sound->mid(from * 2, (to - from) * 2));
+    // A few milliseconds of fade at each cut, so a chop never clicks.
+    const qsizetype fade = std::min<qsizetype>((to - from) / 2, kRate / 400);
+    for (qsizetype i = 0; i < fade; ++i) {
+        const float g = float(i) / fade;
+        for (int c = 0; c < 2; ++c) {
+            (*part)[2 * i + c] *= g;
+            (*part)[part->size() - 2 - 2 * i + c] *= g;
+        }
+    }
+    return SampleBuffer(part);
 }

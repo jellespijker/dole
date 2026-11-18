@@ -31,14 +31,18 @@ protected:
         m_buffer.resize(frames * 2);
 
         struct Event {
-            int chainIndex, pattern, step, frame;
+            int a, b, c, frame;
+            bool repeat;
         };
-        QVarLengthArray<Event, 4> events;
+        QVarLengthArray<Event, 8> events;
         {
             QMutexLocker lock(&m_shared->mutex);
-            m_shared->renderer.render(m_buffer.data(), frames, [&](int chainIndex, int pattern, int step, int frame) {
-                events.append({chainIndex, pattern, step, frame});
-            });
+            m_shared->renderer.render(
+                m_buffer.data(), frames,
+                [&](int chainIndex, int pattern, int step, int frame) {
+                    events.append({chainIndex, pattern, step, frame, false});
+                },
+                [&](int pad, int pattern, int step, int frame) { events.append({pad, pattern, step, frame, true}); });
         }
 
         if (m_format.sampleFormat() == QAudioFormat::Float) {
@@ -55,7 +59,10 @@ protected:
         for (const Event &event : events) {
             const int delay = int((queued + event.frame) * 1000LL / kRate);
             QTimer::singleShot(delay, Qt::PreciseTimer, m_engine, [engine = m_engine, event] {
-                emit engine->positionChanged(event.chainIndex, event.pattern, event.step);
+                if (event.repeat)
+                    emit engine->repeated(event.a, event.b, event.c);
+                else
+                    emit engine->positionChanged(event.a, event.b, event.c);
             });
         }
         return qint64(frames) * m_format.bytesPerFrame();
@@ -120,7 +127,7 @@ void AudioEngine::setSong(const Song &song) {
     m_shared->renderer.setSong(song);
 }
 
-void AudioEngine::setSounds(const std::array<SampleBuffer, kTracks> &sounds) {
+void AudioEngine::setSounds(const std::array<SampleBuffer, kPads> &sounds) {
     QMutexLocker lock(&m_shared->mutex);
     m_shared->renderer.setSounds(sounds);
 }
@@ -141,8 +148,29 @@ void AudioEngine::stop() {
     m_shared->renderer.stop();
 }
 
-void AudioEngine::audition(int track, const Step &step) {
+void AudioEngine::hit(int pad, int level) {
     open();
     QMutexLocker lock(&m_shared->mutex);
-    m_shared->renderer.audition(track, step);
+    m_shared->renderer.hit(pad, level);
+}
+
+void AudioEngine::hold(int pad, bool held, int level) {
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.hold(pad, held, level);
+}
+
+void AudioEngine::setRepeat(int division) {
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.setRepeat(division);
+}
+
+void AudioEngine::suppress(int pad, int pattern, int step) {
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.suppress(pad, pattern, step);
+}
+
+void AudioEngine::preview(const SampleBuffer &sound, double rate) {
+    open();
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.preview(sound, rate);
 }

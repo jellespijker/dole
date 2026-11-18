@@ -7,15 +7,21 @@
 #include <QStandardPaths>
 #include <QtConcurrentRun>
 
+#include "chop.h"
 #include "renderer.h"
 #include "wav.h"
 
 namespace {
 
 constexpr int kMaxUndo = 500;
+constexpr int kPeaks = 600;
 
-bool valid(int track, int step) {
-    return track >= 0 && track < kTracks && step >= 0 && step < kSteps;
+bool validPad(int pad) {
+    return pad >= 0 && pad < kPads;
+}
+
+bool valid(int pad, int step) {
+    return validPad(pad) && step >= 0 && step < kSteps;
 }
 
 QString musicFolder() {
@@ -29,11 +35,20 @@ QString withSuffix(QString path, const QString &suffix) {
     return path;
 }
 
+QString sliceKey(const Pad &pad) {
+    return QString("%1|%2|%3").arg(pad.sample).arg(pad.start).arg(pad.end);
+}
+
 } // namespace
 
 Backend::Backend(Engine *engine, FilePicker *picker, QObject *parent)
     : QObject(parent), m_engine(engine), m_picker(picker), m_song(demoSong()), m_saved(m_song) {
     connect(m_engine, &Engine::positionChanged, this, &Backend::onPosition);
+    connect(m_engine, &Engine::repeated, this, [this](int pad, int pattern, int step) {
+        emit padHit(pad);
+        if (m_recording && m_playing)
+            record(pad, pattern, step, kDefaultLevel, false);
+    });
     connect(m_engine, &Engine::failed, this, [this](const QString &kind, const QString &detail) {
         setMessage(kind, {}, detail);
         if (m_playing)
@@ -50,8 +65,10 @@ Backend::Backend(Engine *engine, FilePicker *picker, QObject *parent)
     connect(m_picker, &FilePicker::opened, this, [this](FilePicker::Kind kind, const QUrl &url) {
         if (kind == FilePicker::Song)
             openPath(url.toLocalFile());
-        else if (kind == FilePicker::Sample && m_sampleTrack >= 0)
-            setSample(m_sampleTrack, url.toLocalFile());
+        else if (kind == FilePicker::Sample && m_samplePad >= 0)
+            setSample(m_samplePad, url.toLocalFile());
+        else if (kind == FilePicker::Sample)
+            openChop(url.toLocalFile());
     });
     connect(m_picker, &FilePicker::saveChosen, this, [this](FilePicker::Kind kind, const QUrl &url) {
         if (kind == FilePicker::Song)
@@ -79,31 +96,58 @@ QVariantList Backend::usedPatterns() const {
 QVariantList Backend::grid() const {
     QVariantList rows;
     const Pattern &pattern = m_song.patterns[m_editPattern];
-    for (int t = 0; t < kTracks; ++t) {
+    for (int p = 0; p < kPads; ++p) {
         QVariantList row;
-        for (const Step &step : pattern.steps[t])
-            row << QVariantMap{{"kind", int(step.kind)}, {"level", step.level}, {"note", noteName(step.note)}};
+        for (const Step &step : pattern.steps[p])
+            row << step.level;
         rows << QVariant(row);
     }
     return rows;
 }
 
-QVariantList Backend::tracks() const {
+QVariantList Backend::pads() const {
     QVariantList list;
-    for (int t = 0; t < kTracks; ++t) {
-        const Track &track = m_song.tracks[t];
-        const QString state = track.sample.isEmpty()                ? "builtin"
-                              : m_samples.contains(track.sample)    ? "ready"
-                              : m_loading.contains(track.sample)    ? "loading"
-                                                                    : "failed";
-        list << QVariantMap{{"id", trackIds()[t]},
-                            {"sample", QFileInfo(track.sample).fileName()},
+    for (int p = 0; p < kPads; ++p) {
+        const Pad &pad = m_song.pads[p];
+        const QString state = pad.sample.isEmpty()              ? "kit"
+                              : m_samples.contains(pad.sample)  ? "ready"
+                              : m_loading.contains(pad.sample)  ? "loading"
+                                                                : "failed";
+        list << QVariantMap{{"id", kitIds()[p]},
+                            {"sample", QFileInfo(pad.sample).completeBaseName()},
+                            {"chop", pad.isChop()},
                             {"state", state},
-                            {"volume", track.volume},
-                            {"mute", track.mute},
-                            {"solo", track.solo},
-                            {"audible", m_song.audible(t)}};
+                            {"tune", pad.tune},
+                            {"volume", pad.volume},
+                            {"group", pad.group},
+                            {"mute", pad.mute},
+                            {"solo", pad.solo},
+                            {"audible", m_song.audible(p)}};
     }
+    return list;
+}
+
+QString Backend::repeatName() const {
+    return QString::fromLatin1(::repeatName(m_repeat ? m_repeat : m_lastRepeat));
+}
+
+QString Backend::chopName() const {
+    return QFileInfo(m_chopPath).completeBaseName();
+}
+
+QString Backend::chopState() const {
+    return m_chopPath.isEmpty()                ? "empty"
+           : m_samples.contains(m_chopPath)    ? "ready"
+           : m_loading.contains(m_chopPath)    ? "loading"
+                                               : "failed";
+}
+
+QVariantList Backend::chopSlices() const {
+    QVariantList list;
+    const double length = duration(m_samples.value(m_chopPath));
+    if (length > 0)
+        for (double start : m_chopStarts)
+            list << start / length;
     return list;
 }
 
@@ -130,23 +174,33 @@ void Backend::sync() {
     syncSounds();
     emit songChanged();
     emit gridChanged();
-    emit tracksChanged();
+    emit padsChanged();
 }
 
-std::array<SampleBuffer, kTracks> Backend::sounds() const {
-    std::array<SampleBuffer, kTracks> sounds;
-    for (int t = 0; t < kTracks; ++t) {
-        const QString &sample = m_song.tracks[t].sample;
-        sounds[t] = sample.isEmpty() ? builtInSound(t) : m_samples.value(sample);
+SampleBuffer Backend::padSound(const Pad &pad) const {
+    const SampleBuffer whole = m_samples.value(pad.sample);
+    if (!whole || !pad.isChop())
+        return whole;
+    const QString key = sliceKey(pad);
+    if (!m_slices.contains(key))
+        m_slices.insert(key, slice(whole, pad.start, pad.end));
+    return m_slices.value(key);
+}
+
+std::array<SampleBuffer, kPads> Backend::sounds() const {
+    std::array<SampleBuffer, kPads> sounds;
+    for (int p = 0; p < kPads; ++p) {
+        const Pad &pad = m_song.pads[p];
+        sounds[p] = pad.sample.isEmpty() ? kitSound(p) : padSound(pad);
     }
     return sounds;
 }
 
 void Backend::syncSounds() {
-    for (const Track &track : m_song.tracks)
-        if (!track.sample.isEmpty() && !m_samples.contains(track.sample) && !m_loading.contains(track.sample)
-            && !m_failed.contains(track.sample))
-            loadSample(track.sample);
+    for (const Pad &pad : m_song.pads)
+        if (!pad.sample.isEmpty() && !m_samples.contains(pad.sample) && !m_loading.contains(pad.sample)
+            && !m_failed.contains(pad.sample))
+            loadSample(pad.sample);
     m_engine->setSounds(sounds());
 }
 
@@ -166,8 +220,7 @@ void Backend::loadSample(const QString &path) {
             else
                 setMessage("sampleFailed", QFileInfo(path).fileName(), error);
         }
-        m_engine->setSounds(sounds());
-        emit tracksChanged();
+        sampleLoaded(path);
     });
     // ffmpeg can take a while on a long file, so it decodes off the GUI thread.
     watcher->setFuture(QtConcurrent::run([path] {
@@ -175,6 +228,22 @@ void Backend::loadSample(const QString &path) {
         SampleBuffer sound = decodeSample(path, &error);
         return qMakePair(sound, error);
     }));
+}
+
+void Backend::sampleLoaded(const QString &path) {
+    m_engine->setSounds(sounds());
+    emit padsChanged();
+    if (path != m_chopPath)
+        return;
+    const SampleBuffer sound = m_samples.value(path);
+    m_chopPeaks.clear();
+    for (float peak : peaks(sound, kPeaks))
+        m_chopPeaks << peak;
+    // Where it hits is usually where a producer would cut it.
+    m_chopStarts = transientSlices(sound, 8);
+    if (m_chopStarts.size() < 2)
+        m_chopStarts = evenSlices(duration(sound), 8);
+    emit chopChanged();
 }
 
 void Backend::setMessage(const QString &kind, const QString &arg, const QString &detail) {
@@ -189,63 +258,37 @@ void Backend::dismissMessage() {
     emit messageChanged();
 }
 
-void Backend::audition(int track, const Step &step) {
+void Backend::toggleStep(int pad, int step) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    Step &s = next.patterns[m_editPattern].steps[pad][step];
+    s.level = s.on() ? 0 : kDefaultLevel;
+    if (s.on() && !m_playing)
+        m_engine->hit(pad, s.level);
+    selectPad(pad);
+    apply(next);
+}
+
+void Backend::clearStep(int pad, int step) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    next.patterns[m_editPattern].steps[pad][step] = Step{};
+    apply(next);
+}
+
+void Backend::changeStep(int pad, int step, int delta) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    Step &s = next.patterns[m_editPattern].steps[pad][step];
+    if (!s.on())
+        return;
+    s.level = qBound(1, s.level + delta, kLevels);
     if (!m_playing)
-        m_engine->audition(track, step);
-}
-
-void Backend::toggleStep(int track, int step) {
-    if (!valid(track, step))
-        return;
-    Song next = m_song;
-    Step &s = stepAt(next, track, step);
-    if (s.kind == StepKind::Hit) {
-        s = Step{};
-    } else {
-        s = Step{};
-        s.kind = StepKind::Hit;
-        if (track == kBass)
-            s.note = m_lastNote;
-        audition(track, s);
-    }
-    apply(next);
-}
-
-void Backend::holdStep(int track, int step) {
-    if (track != kBass || !valid(track, step))
-        return;
-    Song next = m_song;
-    Step &s = stepAt(next, track, step);
-    const bool hold = s.kind != StepKind::Hold;
-    s = Step{};
-    if (hold)
-        s.kind = StepKind::Hold;
-    apply(next);
-}
-
-void Backend::clearStep(int track, int step) {
-    if (!valid(track, step))
-        return;
-    Song next = m_song;
-    stepAt(next, track, step) = Step{};
-    apply(next);
-}
-
-void Backend::changeStep(int track, int step, int delta) {
-    if (!valid(track, step))
-        return;
-    Song next = m_song;
-    Step &s = stepAt(next, track, step);
-    if (s.kind != StepKind::Hit)
-        return;
-    if (track == kBass) {
-        s.note = qBound(kMinNote, s.note + delta, kMaxNote);
-        m_lastNote = s.note;
-    } else {
-        s.level = qBound(1, s.level + delta, kLevels);
-    }
-    audition(track, s);
-    apply(next, QString("step %1 %2 %3").arg(m_editPattern).arg(track).arg(step));
+        m_engine->hit(pad, s.level);
+    apply(next, QString("step %1 %2 %3").arg(m_editPattern).arg(pad).arg(step));
 }
 
 void Backend::selectPattern(int pattern) {
@@ -315,49 +358,201 @@ void Backend::changeSwing(int delta) {
     apply(next, "swing");
 }
 
-void Backend::toggleMute(int track) {
-    if (track < 0 || track >= kTracks)
-        return;
+void Backend::cycleGrit() {
     Song next = m_song;
-    next.tracks[track].mute = !next.tracks[track].mute;
+    next.grit = Grit((int(next.grit) + 1) % 3);
     apply(next);
 }
 
-void Backend::toggleSolo(int track) {
-    if (track < 0 || track >= kTracks)
-        return;
+void Backend::toggleVinyl() {
     Song next = m_song;
-    next.tracks[track].solo = !next.tracks[track].solo;
+    next.vinyl = !next.vinyl;
     apply(next);
 }
 
-void Backend::changeVolume(int track, double delta) {
-    if (track < 0 || track >= kTracks)
+void Backend::padDown(int pad, int level) {
+    if (!validPad(pad))
         return;
-    Song next = m_song;
-    next.tracks[track].volume = qBound(0.0, qRound((next.tracks[track].volume + delta) * 100) / 100.0, 1.0);
-    apply(next, QString("volume %1").arg(track));
+    selectPad(pad);
+    m_engine->hit(pad, level);
+    emit padHit(pad);
+    if (m_repeat > 0) {
+        m_held.insert(pad);
+        m_engine->hold(pad, true, level);
+    }
+    if (!m_recording || !m_playing || m_playStep < 0)
+        return;
+    // Recorded on the nearest step: the one heard last, or the next if the
+    // hit came more than halfway to it.
+    const double stepMs = 60000.0 / m_song.bpm / 4;
+    const bool late = m_sinceStep.elapsed() > stepMs / 2;
+    const int step = (m_playStep + (late ? 1 : 0)) % kSteps;
+    record(pad, m_playPattern, step, level, late);
 }
 
-void Backend::chooseSample(int track) {
-    if (track < 0 || track >= kTracks)
+void Backend::padUp(int pad) {
+    if (!m_held.remove(pad))
         return;
-    m_sampleTrack = track;
+    m_engine->hold(pad, false, 0);
+}
+
+void Backend::releaseAll() {
+    for (int pad : std::as_const(m_held))
+        m_engine->hold(pad, false, 0);
+    m_held.clear();
+}
+
+void Backend::record(int pad, int pattern, int step, int level, bool suppress) {
+    if (pattern < 0 || pattern >= kPatterns || !valid(pad, step))
+        return;
+    // The step after the one heard hasn't played yet; it was heard just now,
+    // live, so the sequence skips it this time round.
+    if (suppress)
+        m_engine->suppress(pad, pattern, step);
+    Song next = m_song;
+    Step &s = next.patterns[pattern].steps[pad][step];
+    s.level = std::max(s.level, level);
+    // A whole take undoes at once.
+    apply(next, "record");
+}
+
+void Backend::selectPad(int pad) {
+    if (!validPad(pad) || pad == m_selectedPad)
+        return;
+    m_selectedPad = pad;
+    emit selectedPadChanged();
+}
+
+void Backend::toggleMute(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].mute = !next.pads[pad].mute;
+    apply(next);
+}
+
+void Backend::toggleSolo(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].solo = !next.pads[pad].solo;
+    apply(next);
+}
+
+void Backend::changeVolume(int pad, double delta) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].volume = qBound(0.0, qRound((next.pads[pad].volume + delta) * 100) / 100.0, 1.0);
+    apply(next, QString("volume %1").arg(pad));
+}
+
+void Backend::changeTune(int pad, int delta) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].tune = qBound(kMinTune, next.pads[pad].tune + delta, kMaxTune);
+    apply(next, QString("tune %1").arg(pad));
+    if (!m_playing)
+        m_engine->hit(pad, kDefaultLevel);
+}
+
+void Backend::cycleGroup(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].group = (next.pads[pad].group + 1) % (kGroups + 1);
+    apply(next);
+}
+
+void Backend::chooseSample(int pad) {
+    if (!validPad(pad))
+        return;
+    m_samplePad = pad;
     m_picker->open(FilePicker::Sample);
 }
 
-void Backend::resetSample(int track) {
-    setSample(track, {});
+void Backend::resetPad(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].sample.clear();
+    next.pads[pad].start = next.pads[pad].end = 0;
+    next.pads[pad].tune = 0;
+    next.pads[pad].group = Song::defaultPads()[pad].group;
+    apply(next);
 }
 
-void Backend::setSample(int track, const QString &path) {
-    if (track < 0 || track >= kTracks)
+void Backend::setSample(int pad, const QString &path) {
+    if (!validPad(pad))
         return;
     // Picking a sample that failed before tries it again: the file may be fixed.
     m_failed.remove(path);
     Song next = m_song;
-    next.tracks[track].sample = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+    next.pads[pad].sample = path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+    next.pads[pad].start = next.pads[pad].end = 0;
     apply(next);
+}
+
+void Backend::chooseChop() {
+    m_samplePad = -1;
+    m_picker->open(FilePicker::Sample);
+}
+
+void Backend::openChop(const QString &path) {
+    m_chopPath = QFileInfo(path).absoluteFilePath();
+    m_chopPeaks.clear();
+    m_chopStarts.clear();
+    m_failed.remove(m_chopPath);
+    if (m_samples.contains(m_chopPath)) {
+        sampleLoaded(m_chopPath);
+        return;
+    }
+    if (!m_loading.contains(m_chopPath))
+        loadSample(m_chopPath);
+    emit chopChanged();
+}
+
+void Backend::sliceEven(int count) {
+    const SampleBuffer sound = m_samples.value(m_chopPath);
+    if (!sound || count < 1)
+        return;
+    m_chopStarts = evenSlices(duration(sound), std::min(count, kPads));
+    emit chopChanged();
+}
+
+void Backend::sliceTransients() {
+    const SampleBuffer sound = m_samples.value(m_chopPath);
+    if (!sound)
+        return;
+    m_chopStarts = transientSlices(sound, kPads);
+    emit chopChanged();
+}
+
+void Backend::previewSlice(int index) {
+    const SampleBuffer sound = m_samples.value(m_chopPath);
+    if (!sound || index < 0 || index >= m_chopStarts.size())
+        return;
+    const double end = index + 1 < m_chopStarts.size() ? m_chopStarts[index + 1] : 0;
+    m_engine->preview(slice(sound, m_chopStarts[index], end), 1.0);
+}
+
+int Backend::assignChops(int firstPad) {
+    if (!m_samples.contains(m_chopPath) || !validPad(firstPad))
+        return 0;
+    Song next = m_song;
+    int count = 0;
+    for (int i = 0; i < m_chopStarts.size() && firstPad + i < kPads; ++i, ++count) {
+        Pad &pad = next.pads[firstPad + i];
+        pad.sample = m_chopPath;
+        pad.start = m_chopStarts[i];
+        pad.end = i + 1 < m_chopStarts.size() ? m_chopStarts[i + 1] : duration(m_samples.value(m_chopPath));
+        pad.tune = 0;
+        pad.group = 0;
+    }
+    apply(next);
+    setMessage("chopped", QString::number(count), QString::number(firstPad + 1));
+    return count;
 }
 
 void Backend::togglePlay(int chainStart) {
@@ -375,9 +570,21 @@ void Backend::stop() {
         return;
     m_engine->stop();
     m_playing = false;
+    m_recording = false;
+    m_coalesce.clear();
     m_playStep = m_playPattern = m_playChainIndex = -1;
     emit playingChanged();
     emit positionChanged();
+}
+
+void Backend::toggleRecord(int chainStart) {
+    m_recording = !m_recording;
+    m_coalesce.clear();
+    // Recording from a stop starts playing, as REC and PLAY do together.
+    if (m_recording && !m_playing)
+        togglePlay(chainStart);
+    else
+        emit playingChanged();
 }
 
 void Backend::toggleSongMode() {
@@ -387,14 +594,36 @@ void Backend::toggleSongMode() {
         m_engine->play(m_songMode && !m_song.chain.isEmpty(), m_editPattern, 0);
 }
 
+void Backend::toggleRepeat() {
+    m_repeat = m_repeat ? 0 : m_lastRepeat;
+    m_engine->setRepeat(m_repeat);
+    if (!m_repeat)
+        releaseAll();
+    emit repeatChanged();
+}
+
+void Backend::cycleRepeat() {
+    m_lastRepeat = m_lastRepeat % (kRepeatDivisions - 1) + 1;
+    if (m_repeat) {
+        m_repeat = m_lastRepeat;
+        m_engine->setRepeat(m_repeat);
+    }
+    emit repeatChanged();
+}
+
 void Backend::onPosition(int chainIndex, int pattern, int step) {
     // A step already on its way when playing stopped.
     if (!m_playing)
         return;
+    m_sinceStep.start();
     m_playChainIndex = chainIndex;
     m_playPattern = pattern;
     m_playStep = step;
     emit positionChanged();
+    const Pattern &playing = m_song.patterns[pattern];
+    for (int pad = 0; pad < kPads; ++pad)
+        if (playing.steps[pad][step].on() && m_song.audible(pad))
+            emit padHit(pad);
     // Playing the song, the grid follows it.
     if (m_songMode && !m_song.chain.isEmpty() && pattern != m_editPattern) {
         m_editPattern = pattern;
@@ -430,8 +659,8 @@ bool Backend::openPath(const QString &path) {
         return false;
     }
     // A sample that failed before gets another go with the song that uses it.
-    for (const Track &track : song.tracks)
-        m_failed.remove(track.sample);
+    for (const Pad &pad : song.pads)
+        m_failed.remove(pad.sample);
     replaceSong(song, QFileInfo(path).absoluteFilePath());
     dismissMessage();
     return true;
@@ -445,8 +674,7 @@ void Backend::save() {
 }
 
 void Backend::saveAs() {
-    const QString suggested =
-        m_path.isEmpty() ? musicFolder() + "/" + tr("Untitled") + ".dole" : m_path;
+    const QString suggested = m_path.isEmpty() ? musicFolder() + "/" + tr("Untitled") + ".dole" : m_path;
     m_picker->save(FilePicker::Song, QUrl::fromLocalFile(suggested));
 }
 

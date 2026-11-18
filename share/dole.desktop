@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Dole
-Comment=Make loops: drums and a bassline, chained into a song
-Comment[da]=Lav loops: trommer og en baslinje, sat sammen til en sang
-Comment[de]=Loops bauen: Drums und eine Basslinie, zu einem Song verkettet
-Comment[nl]=Maak loops: drums en een baslijn, aan elkaar geregen tot een nummer
+Comment=Make beats on sixteen pads: a boom-bap kit, samples, and chops
+Comment[da]=Lav beats på seksten pads: et boom-bap-kit, samples og chops
+Comment[de]=Beats auf sechzehn Pads bauen: ein Boom-Bap-Kit, Samples und Chops
+Comment[nl]=Maak beats op zestien pads: een boom-bap-kit, samples en chops
 Exec=dole open %f
 Icon=dole
 Terminal=false

@@ -10,9 +10,11 @@
 constexpr int kRate = 48000;
 using SampleBuffer = QSharedPointer<const QVector<float>>;
 
-// The built-in drum sounds, synthesized once; empty for the bass, which is
-// a synthesizer of its own.
-SampleBuffer builtInSound(int track);
+// The kit's sound for each pad, synthesized once.
+SampleBuffer kitSound(int pad);
+
+// The part of a sound from start to end, in seconds; an end of 0 is the end.
+SampleBuffer slice(const SampleBuffer &sound, double start, double end);
 
 // The longest sample loaded, so a whole album dropped on a track by mistake
 // doesn't fill memory.

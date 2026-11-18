@@ -12,12 +12,10 @@
 
 namespace {
 
-const char *const kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-
-// A drum row is one character per step: '.' is off, '1' to '4' a level,
-// with 'o' for 2, 'x' for 3, and 'X' for 4 as easier names.
+// A row is one character per step: '.' is off, '1' to '4' a level, with 'o'
+// for 2, 'x' for 3, and 'X' for 4 as easier names.
 QChar levelChar(int level) {
-    return level == 4 ? 'X' : level == 3 ? 'x' : QChar('0' + level);
+    return level == 4 ? 'X' : level == 3 ? 'x' : level == 0 ? '.' : QChar('0' + level);
 }
 
 int charLevel(QChar c) {
@@ -32,22 +30,6 @@ int charLevel(QChar c) {
     return c == '.' || c == '-' ? 0 : -1;
 }
 
-QString drumRow(const std::array<Step, kSteps> &steps) {
-    QString row;
-    for (const Step &step : steps)
-        row += step.kind == StepKind::Hit ? levelChar(step.level) : QChar('.');
-    return row;
-}
-
-// The bass row is one word per step: a note ("C2", "Eb1"), '-' to hold the
-// note before it, or '.' for silence.
-QString bassRow(const std::array<Step, kSteps> &steps) {
-    QStringList words;
-    for (const Step &step : steps)
-        words << (step.kind == StepKind::Hit ? noteName(step.note) : step.kind == StepKind::Hold ? "-" : ".");
-    return words.join(' ');
-}
-
 QString relativeTo(const QString &baseDirectory, const QString &path) {
     if (baseDirectory.isEmpty())
         return path;
@@ -55,26 +37,81 @@ QString relativeTo(const QString &baseDirectory, const QString &path) {
     return relative.startsWith("..") ? path : relative;
 }
 
+// A pad by its number ("1" to "16") or its kit sound's name ("boom").
+int padIndex(const QString &key) {
+    bool number = false;
+    const int n = key.toInt(&number);
+    if (number)
+        return n >= 1 && n <= kPads ? n - 1 : -1;
+    return kitIds().indexOf(key);
+}
+
+double seconds(double value) {
+    return std::round(value * 1000) / 1000;
+}
+
+// The first format had eight named tracks and a bass synthesizer; each
+// track moves to the pad with the nearest sound, and the bass to the bass pad.
+QJsonObject upgradeFromTracks(QJsonObject json) {
+    static const QHash<QString, QString> pads{{"kick", "1"},  {"snare", "3"},   {"hat", "7"},     {"openhat", "8"},
+                                             {"clap", "6"},  {"rim", "5"},     {"cowbell", "12"}, {"bass", "15"}};
+    QJsonObject padSettings;
+    const QJsonObject tracks = json.take("tracks").toObject();
+    for (auto it = tracks.begin(); it != tracks.end(); ++it)
+        if (pads.contains(it.key()))
+            padSettings.insert(pads.value(it.key()), it.value());
+    QJsonObject patterns = json.value("patterns").toObject();
+    for (auto it = patterns.begin(); it != patterns.end(); ++it) {
+        QJsonObject rows;
+        const QJsonObject old = it.value().toObject();
+        for (auto row = old.begin(); row != old.end(); ++row) {
+            if (!pads.contains(row.key()))
+                continue;
+            QString text = row.value().toString();
+            if (row.key() == "bass") {
+                QString steps;
+                for (const QString &word : text.split(' ', Qt::SkipEmptyParts))
+                    steps += word == "." || word == "-" ? '.' : 'x';
+                text = steps;
+            }
+            rows.insert(pads.value(row.key()), text);
+        }
+        it.value() = rows;
+    }
+    json.insert("pads", padSettings);
+    json.insert("patterns", patterns);
+    json.insert("dole", 2);
+    return json;
+}
+
 } // namespace
 
 bool Pattern::isEmpty() const {
     for (const auto &row : steps)
         for (const Step &step : row)
-            if (step.kind != StepKind::Off)
+            if (step.on())
                 return false;
     return true;
 }
 
-bool Song::audible(int track) const {
-    bool anySolo = false;
-    for (const Track &t : tracks)
-        anySolo = anySolo || t.solo;
-    const Track &t = tracks[track];
-    return !t.mute && (!anySolo || t.solo);
+std::array<Pad, kPads> Song::defaultPads() {
+    std::array<Pad, kPads> pads{};
+    // The closed hat cuts the open one off, as on a real kit.
+    pads[6].group = 1;
+    pads[7].group = 1;
+    return pads;
 }
 
-const QStringList &trackIds() {
-    static const QStringList ids{"kick", "snare", "hat", "openhat", "clap", "rim", "cowbell", "bass"};
+bool Song::audible(int pad) const {
+    bool anySolo = false;
+    for (const Pad &p : pads)
+        anySolo = anySolo || p.solo;
+    return !pads[pad].mute && (!anySolo || pads[pad].solo);
+}
+
+const QStringList &kitIds() {
+    static const QStringList ids{"boom",   "knock", "crack", "dusty", "rim",  "clap", "hat",  "openhat",
+                                 "shaker", "tom",   "crash", "clang", "stab", "bell", "bass", "horn"};
     return ids;
 }
 
@@ -89,22 +126,8 @@ int patternIndex(const QString &name) {
     return index >= 0 && index < kPatterns ? index : -1;
 }
 
-QString noteName(int note) {
-    return QString("%1%2").arg(kNoteNames[note % 12]).arg(note / 12 - 1);
-}
-
-int parseNote(const QString &name) {
-    static const QRegularExpression re("^([A-Ga-g])([#b]?)(-?[0-9])$");
-    const auto match = re.match(name);
-    if (!match.hasMatch())
-        return -1;
-    static const int offsets[] = {9, 11, 0, 2, 4, 5, 7}; // A to G
-    int note = offsets[match.captured(1).at(0).toUpper().unicode() - 'A'];
-    if (match.captured(2) == "#")
-        ++note;
-    else if (match.captured(2) == "b")
-        --note;
-    return note + (match.captured(3).toInt() + 1) * 12;
+QString gritName(Grit grit) {
+    return grit == Grit::TwelveBit ? "12-bit" : grit == Grit::Crushed ? "crushed" : "clean";
 }
 
 float levelGain(int level) {
@@ -113,17 +136,26 @@ float levelGain(int level) {
 }
 
 QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
-    QJsonObject tracks;
-    for (int t = 0; t < kTracks; ++t) {
-        const Track &track = song.tracks[t];
-        QJsonObject object{{"volume", std::round(track.volume * 100) / 100}};
-        if (!track.sample.isEmpty())
-            object.insert("sample", relativeTo(baseDirectory, track.sample));
-        if (track.mute)
+    const auto defaults = Song::defaultPads();
+    QJsonObject pads;
+    for (int p = 0; p < kPads; ++p) {
+        const Pad &pad = song.pads[p];
+        QJsonObject object{{"volume", std::round(pad.volume * 100) / 100}};
+        if (!pad.sample.isEmpty())
+            object.insert("sample", relativeTo(baseDirectory, pad.sample));
+        if (pad.start > 0)
+            object.insert("start", seconds(pad.start));
+        if (pad.end > 0)
+            object.insert("end", seconds(pad.end));
+        if (pad.tune != 0)
+            object.insert("tune", pad.tune);
+        if (pad.group != defaults[p].group)
+            object.insert("group", pad.group);
+        if (pad.mute)
             object.insert("mute", true);
-        if (track.solo)
+        if (pad.solo)
             object.insert("solo", true);
-        tracks.insert(trackIds()[t], object);
+        pads.insert(QString::number(p + 1), object);
     }
 
     QJsonObject patterns;
@@ -132,12 +164,12 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
         if (pattern.isEmpty())
             continue;
         QJsonObject rows;
-        for (int t = 0; t < kTracks; ++t) {
-            const auto &steps = pattern.steps[t];
-            const bool empty = std::all_of(steps.begin(), steps.end(),
-                                           [](const Step &s) { return s.kind == StepKind::Off; });
-            if (!empty)
-                rows.insert(trackIds()[t], t == kBass ? bassRow(steps) : drumRow(steps));
+        for (int pad = 0; pad < kPads; ++pad) {
+            QString row;
+            for (const Step &step : pattern.steps[pad])
+                row += levelChar(step.level);
+            if (row != QString(kSteps, '.'))
+                rows.insert(QString::number(pad + 1), row);
         }
         patterns.insert(patternName(p), rows);
     }
@@ -146,18 +178,20 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
     for (int p : song.chain)
         chain.append(patternName(p));
 
-    return {{"dole", 1},          {"bpm", song.bpm},   {"swing", song.swing},
-            {"tracks", tracks},   {"patterns", patterns}, {"song", chain}};
+    return {{"dole", 2},           {"bpm", song.bpm},     {"swing", song.swing}, {"grit", gritName(song.grit)},
+            {"vinyl", song.vinyl}, {"pads", pads},        {"patterns", patterns}, {"song", chain}};
 }
 
-bool songFromJson(const QJsonObject &json, const QString &baseDirectory, Song *out, QString *error) {
+bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *out, QString *error) {
     auto fail = [error](const QString &message) {
         if (error)
             *error = message;
         return false;
     };
-    if (json.value("dole").toInt() != 1)
-        return fail("Not a dole song: \"dole\" should be 1.");
+    const int version = input.value("dole").toInt();
+    if (version != 1 && version != 2)
+        return fail("Not a dole song: \"dole\" should be 2.");
+    const QJsonObject json = version == 1 ? upgradeFromTracks(input) : input;
 
     Song song;
     song.bpm = json.value("bpm").toInt(song.bpm);
@@ -166,20 +200,38 @@ bool songFromJson(const QJsonObject &json, const QString &baseDirectory, Song *o
     song.swing = json.value("swing").toInt(song.swing);
     if (song.swing < kMinSwing || song.swing > kMaxSwing)
         return fail(QString("\"swing\" should be between %1 and %2.").arg(kMinSwing).arg(kMaxSwing));
+    const QString grit = json.value("grit").toString("clean");
+    if (grit == "12-bit")
+        song.grit = Grit::TwelveBit;
+    else if (grit == "crushed")
+        song.grit = Grit::Crushed;
+    else if (grit != "clean")
+        return fail(QString("\"grit\" is \"clean\", \"12-bit\", or \"crushed\", not \"%1\".").arg(grit));
+    song.vinyl = json.value("vinyl").toBool();
 
-    const QJsonObject tracks = json.value("tracks").toObject();
-    for (auto it = tracks.begin(); it != tracks.end(); ++it) {
-        const int t = trackIds().indexOf(it.key());
-        if (t < 0)
-            return fail(QString("Unknown track \"%1\"; the tracks are %2.").arg(it.key(), trackIds().join(", ")));
+    const QJsonObject pads = json.value("pads").toObject();
+    for (auto it = pads.begin(); it != pads.end(); ++it) {
+        const int p = padIndex(it.key());
+        if (p < 0)
+            return fail(QString("Unknown pad \"%1\"; pads are 1 to 16.").arg(it.key()));
         const QJsonObject object = it.value().toObject();
-        Track &track = song.tracks[t];
-        track.volume = qBound(0.0, object.value("volume").toDouble(track.volume), 1.0);
-        track.mute = object.value("mute").toBool();
-        track.solo = object.value("solo").toBool();
+        Pad &pad = song.pads[p];
+        pad.volume = qBound(0.0, object.value("volume").toDouble(pad.volume), 1.0);
+        pad.tune = object.value("tune").toInt(0);
+        if (pad.tune < kMinTune || pad.tune > kMaxTune)
+            return fail(QString("Pad %1: \"tune\" should be between %2 and %3.").arg(p + 1).arg(kMinTune).arg(kMaxTune));
+        pad.group = object.value("group").toInt(pad.group);
+        if (pad.group < 0 || pad.group > kGroups)
+            return fail(QString("Pad %1: \"group\" should be between 0 and %2.").arg(p + 1).arg(kGroups));
+        pad.mute = object.value("mute").toBool();
+        pad.solo = object.value("solo").toBool();
         const QString sample = object.value("sample").toString();
         if (!sample.isEmpty())
-            track.sample = QDir::cleanPath(QDir(baseDirectory).absoluteFilePath(sample));
+            pad.sample = QDir::cleanPath(QDir(baseDirectory).absoluteFilePath(sample));
+        pad.start = std::max(0.0, object.value("start").toDouble());
+        pad.end = std::max(0.0, object.value("end").toDouble());
+        if (pad.end > 0 && pad.end <= pad.start)
+            return fail(QString("Pad %1: \"end\" should be after \"start\".").arg(p + 1));
     }
 
     const QJsonObject patterns = json.value("patterns").toObject();
@@ -189,42 +241,18 @@ bool songFromJson(const QJsonObject &json, const QString &baseDirectory, Song *o
             return fail(QString("Unknown pattern \"%1\"; patterns are A to H.").arg(it.key()));
         const QJsonObject rows = it.value().toObject();
         for (auto row = rows.begin(); row != rows.end(); ++row) {
-            const int t = trackIds().indexOf(row.key());
-            const QString where = QString("Pattern %1, %2: ").arg(it.key(), row.key());
-            if (t < 0)
-                return fail(where + "unknown track; the tracks are " + trackIds().join(", ") + ".");
-            auto &steps = song.patterns[p].steps[t];
-            const QString text = row.value().toString();
-            if (t == kBass) {
-                const QStringList words = text.split(' ', Qt::SkipEmptyParts);
-                if (words.size() != kSteps)
-                    return fail(where + QString("needs %1 steps, has %2.").arg(kSteps).arg(words.size()));
-                for (int s = 0; s < kSteps; ++s) {
-                    if (words[s] == ".")
-                        continue;
-                    if (words[s] == "-") {
-                        steps[s].kind = StepKind::Hold;
-                        continue;
-                    }
-                    const int note = parseNote(words[s]);
-                    if (note < kMinNote || note > kMaxNote)
-                        return fail(where + QString("\"%1\" is not a note from C1 to C4.").arg(words[s]));
-                    steps[s].kind = StepKind::Hit;
-                    steps[s].note = note;
-                }
-            } else {
-                const QString compact = QString(text).remove(' ').remove('|');
-                if (compact.size() != kSteps)
-                    return fail(where + QString("needs %1 steps, has %2.").arg(kSteps).arg(compact.size()));
-                for (int s = 0; s < kSteps; ++s) {
-                    const int level = charLevel(compact[s]);
-                    if (level < 0)
-                        return fail(where + QString("\"%1\" is not a step; use . x X or 1 to 4.").arg(compact[s]));
-                    if (level > 0) {
-                        steps[s].kind = StepKind::Hit;
-                        steps[s].level = level;
-                    }
-                }
+            const int pad = padIndex(row.key());
+            const QString where = QString("Pattern %1, pad %2: ").arg(it.key(), row.key());
+            if (pad < 0)
+                return fail(where + "unknown pad; pads are 1 to 16.");
+            const QString compact = row.value().toString().remove(' ').remove('|');
+            if (compact.size() != kSteps)
+                return fail(where + QString("needs %1 steps, has %2.").arg(kSteps).arg(compact.size()));
+            for (int s = 0; s < kSteps; ++s) {
+                const int level = charLevel(compact[s]);
+                if (level < 0)
+                    return fail(where + QString("\"%1\" is not a step; use . x X or 1 to 4.").arg(compact[s]));
+                song.patterns[p].steps[pad][s].level = level;
             }
         }
     }
@@ -272,26 +300,31 @@ bool saveSong(const QString &path, const Song &song, QString *error) {
 }
 
 Song demoSong() {
-    // Built through the file format, so it reads like a song file does.
+    // Built through the file format, so it reads like a song file does: a
+    // lazy boom-bap with a stab hanging over it and a bell answering.
     const QJsonObject json = QJsonDocument::fromJson(R"({
-        "dole": 1, "bpm": 92, "swing": 54,
+        "dole": 2, "bpm": 88, "swing": 58, "grit": "12-bit", "vinyl": true,
+        "pads": {"13": {"volume": 0.7, "tune": -2}, "14": {"volume": 0.5, "tune": -5}, "15": {"volume": 0.9}},
         "patterns": {
             "A": {
-                "kick":    "X.....x...X.....",
-                "snare":   "....X.......X...",
-                "hat":     "x.o.x.o.x.o.x.o.",
-                "openhat": "..............x.",
-                "bass":    "C2 - - - . . C2 . D#2 - . F2 . . G1 -"
+                "1":  "X......x..x.....",
+                "3":  "....X.......X...",
+                "7":  "x.o.x.o.x.o.x.oo",
+                "8":  "..............x.",
+                "13": "x..........x....",
+                "15": "x......x..x....."
             },
             "B": {
-                "kick":    "X.....x...X...x.",
-                "snare":   "....X.......X...",
-                "hat":     "x.o.x.o.x.o.x.o.",
-                "clap":    "............x...",
-                "bass":    "F1 - - - . . F1 . G#1 - . A#1 . . C2 -"
+                "1":  "X......x..x...x.",
+                "3":  "....X.......X..o",
+                "7":  "x.o.x.o.x.o.x.o.",
+                "12": "........x.......",
+                "13": "x.....x.........",
+                "14": "...........x..x.",
+                "15": "x.....x...x....."
             }
         },
-        "song": ["A", "A", "B", "A"]
+        "song": ["A", "A", "A", "B"]
     })").object();
     Song song;
     songFromJson(json, {}, &song, nullptr);

@@ -2,13 +2,14 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
+import "Names.js" as Names
 
 ApplicationWindow {
     id: win
-    width: 1120
-    height: 720
-    minimumWidth: 880
-    minimumHeight: 560
+    width: 1280
+    height: 800
+    minimumWidth: 960
+    minimumHeight: 620
     visible: true
     title: (backend.fileName || qsTr("Untitled")) + (backend.dirty ? " •" : "") + " — Dole"
     color: theme.background
@@ -20,8 +21,7 @@ ApplicationWindow {
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
-    readonly property bool idle: !help.opened && !confirm.opened
-    property int cursorTrack: 0
+    readonly property bool idle: !help.opened && !confirm.opened && !chop.opened
     property int cursorStep: 0
     property bool songFocus: false
     property int songCursor: 0
@@ -29,18 +29,14 @@ ApplicationWindow {
 
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function patternName(p) { return String.fromCharCode(65 + p) }
-
-    function moveCursor(tracks, steps) {
-        cursorTrack = (cursorTrack + tracks + 8) % 8
-        cursorStep = (cursorStep + steps + 16) % 16
-    }
+    function chainStart() { return Math.min(songCursor, Math.max(0, backend.chain.length - 1)) }
 
     function moveSongCursor(delta) {
         songCursor = Math.max(0, Math.min(backend.chain.length, songCursor + delta))
     }
 
     // Typing a pattern into the song sets the slot under the cursor, or adds
-    // one at the end, and moves on, so "1 1 2 1" writes A A B A.
+    // one at the end, and moves on.
     function typePattern(p) {
         if (songCursor >= backend.chain.length)
             backend.chainInsert(songCursor, p)
@@ -49,8 +45,22 @@ ApplicationWindow {
         songCursor = songCursor + 1
     }
 
-    function play() {
-        backend.togglePlay(Math.min(songCursor, Math.max(0, backend.chain.length - 1)))
+    // The pad a key plays, by where the key sits rather than what it's
+    // called, so the pads keep their shape on any keyboard layout: the rows
+    // from 1 2 3 4 down to Z X C V, pad 1 at the bottom left.
+    readonly property var padScanCodes: ({ 52: 0, 53: 1, 54: 2, 55: 3, 38: 4, 39: 5, 40: 6, 41: 7,
+                                           24: 8, 25: 9, 26: 10, 27: 11, 10: 12, 11: 13, 12: 14, 13: 15 })
+    readonly property var padKeys: ({ [Qt.Key_Z]: 0, [Qt.Key_X]: 1, [Qt.Key_C]: 2, [Qt.Key_V]: 3,
+                                      [Qt.Key_A]: 4, [Qt.Key_S]: 5, [Qt.Key_D]: 6, [Qt.Key_F]: 7,
+                                      [Qt.Key_Q]: 8, [Qt.Key_W]: 9, [Qt.Key_E]: 10, [Qt.Key_R]: 11,
+                                      [Qt.Key_1]: 12, [Qt.Key_2]: 13, [Qt.Key_3]: 14, [Qt.Key_4]: 15,
+                                      [Qt.Key_Exclam]: 12, [Qt.Key_At]: 13, [Qt.Key_NumberSign]: 14, [Qt.Key_Dollar]: 15 })
+    function padFor(event) {
+        if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+            return -1
+        if (event.nativeScanCode in padScanCodes)
+            return padScanCodes[event.nativeScanCode]
+        return event.key in padKeys ? padKeys[event.key] : -1
     }
 
     // Runs action once the song is safe: at once if nothing is unsaved,
@@ -70,6 +80,8 @@ ApplicationWindow {
             guard(() => { closing = true; win.close() })
         }
     }
+    // A pad held when the window loses the keyboard would repeat forever.
+    onActiveChanged: if (!active) backend.releaseAll()
 
     Connections {
         target: backend
@@ -91,9 +103,11 @@ ApplicationWindow {
         }
     }
 
-    // Anywhere.
-    Shortcut { sequence: "Space"; enabled: win.idle; onActivated: win.play() }
-    Shortcut { sequence: "Tab"; enabled: win.idle; onActivated: win.songFocus = !win.songFocus }
+    // Playing.
+    Shortcut { sequence: "Space"; enabled: win.idle; onActivated: backend.togglePlay(win.chainStart()) }
+    Shortcut { sequence: "Shift+Space"; enabled: win.idle; onActivated: backend.toggleRecord(win.chainStart()) }
+    Shortcut { sequence: "N"; enabled: win.idle; onActivated: backend.toggleRepeat() }
+    Shortcut { sequence: "Shift+N"; enabled: win.idle; onActivated: backend.cycleRepeat() }
     Shortcut { sequence: "P"; enabled: win.idle; onActivated: backend.toggleSongMode() }
     Shortcut { sequence: "]"; enabled: win.idle; onActivated: backend.changeBpm(1) }
     Shortcut { sequence: "["; enabled: win.idle; onActivated: backend.changeBpm(-1) }
@@ -101,15 +115,43 @@ ApplicationWindow {
     Shortcut { sequence: "{"; enabled: win.idle; onActivated: backend.changeBpm(-10) }
     Shortcut { sequence: "."; enabled: win.idle; onActivated: backend.changeSwing(1) }
     Shortcut { sequence: ","; enabled: win.idle; onActivated: backend.changeSwing(-1) }
-    Shortcut { sequence: "M"; enabled: win.idle; onActivated: backend.toggleMute(win.cursorTrack) }
-    Shortcut { sequence: "S"; enabled: win.idle; onActivated: backend.toggleSolo(win.cursorTrack) }
-    Shortcut { sequence: "O"; enabled: win.idle; onActivated: backend.chooseSample(win.cursorTrack) }
-    Shortcut { sequence: "Shift+O"; enabled: win.idle; onActivated: backend.resetSample(win.cursorTrack) }
-    Shortcut { sequence: "Shift+Right"; enabled: win.idle; onActivated: backend.changeVolume(win.cursorTrack, 0.05) }
-    Shortcut { sequence: "Shift+Left"; enabled: win.idle; onActivated: backend.changeVolume(win.cursorTrack, -0.05) }
+    Shortcut { sequence: "G"; enabled: win.idle; onActivated: backend.cycleGrit() }
+    Shortcut { sequence: "Shift+G"; enabled: win.idle; onActivated: backend.toggleVinyl() }
+    Shortcut { sequence: "Tab"; enabled: win.idle; onActivated: win.songFocus = !win.songFocus }
+
+    // The pad chosen.
+    Shortcut { sequence: "M"; enabled: win.idle; onActivated: backend.toggleMute(backend.selectedPad) }
+    Shortcut { sequence: "Shift+M"; enabled: win.idle; onActivated: backend.toggleSolo(backend.selectedPad) }
+    Shortcut { sequence: "="; enabled: win.idle; onActivated: backend.changeTune(backend.selectedPad, 1) }
+    Shortcut { sequence: "-"; enabled: win.idle; onActivated: backend.changeTune(backend.selectedPad, -1) }
+    Shortcut { sequence: "+"; enabled: win.idle; onActivated: backend.changeTune(backend.selectedPad, 12) }
+    Shortcut { sequence: "_"; enabled: win.idle; onActivated: backend.changeTune(backend.selectedPad, -12) }
+    Shortcut { sequence: "Shift+Right"; enabled: win.idle; onActivated: backend.changeVolume(backend.selectedPad, 0.05) }
+    Shortcut { sequence: "Shift+Left"; enabled: win.idle; onActivated: backend.changeVolume(backend.selectedPad, -0.05) }
+    Shortcut { sequence: "U"; enabled: win.idle; onActivated: backend.cycleGroup(backend.selectedPad) }
+    Shortcut { sequence: "O"; enabled: win.idle; onActivated: backend.chooseSample(backend.selectedPad) }
+    Shortcut { sequence: "Shift+O"; enabled: win.idle; onActivated: backend.resetPad(backend.selectedPad) }
+    Shortcut { sequence: "K"; enabled: win.idle; onActivated: chop.open() }
+
+    // Patterns.
     Shortcut { sequence: "Ctrl+C"; enabled: win.idle; onActivated: backend.copyPattern() }
     Shortcut { sequence: "Ctrl+V"; enabled: win.idle; onActivated: backend.pastePattern() }
     Shortcut { sequence: "Ctrl+Delete"; enabled: win.idle; onActivated: backend.clearPattern() }
+    Shortcut { sequence: "PgUp"; enabled: win.idle; onActivated: backend.selectPattern(Math.max(0, backend.editPattern - 1)) }
+    Shortcut { sequence: "PgDown"; enabled: win.idle; onActivated: backend.selectPattern(Math.min(7, backend.editPattern + 1)) }
+    Repeater {
+        model: 8
+        Item {
+            required property int index
+            Shortcut {
+                sequence: "Ctrl+" + (index + 1)
+                enabled: win.idle
+                onActivated: win.songFocus ? win.typePattern(index) : backend.selectPattern(index)
+            }
+        }
+    }
+
+    // Files and the rest.
     Shortcut { sequences: [StandardKey.Undo]; enabled: win.idle; onActivated: backend.undo() }
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; enabled: win.idle; onActivated: backend.redo() }
     Shortcut { sequences: [StandardKey.New]; enabled: win.idle; onActivated: win.guard(backend.newSong) }
@@ -117,8 +159,8 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Save]; enabled: win.idle; onActivated: backend.save() }
     Shortcut { sequences: ["Ctrl+Shift+S"]; enabled: win.idle; onActivated: backend.saveAs() }
     Shortcut { sequence: "Ctrl+E"; enabled: win.idle; onActivated: backend.exportAudio() }
-    Shortcut { sequence: "?"; enabled: !confirm.opened; onActivated: help.opened ? help.close() : help.open() }
-    Shortcut { sequence: "Q"; enabled: win.idle; onActivated: win.close() }
+    Shortcut { sequence: "?"; enabled: !confirm.opened && !chop.opened; onActivated: help.opened ? help.close() : help.open() }
+    Shortcut { sequences: ["Ctrl+Q"]; enabled: win.idle; onActivated: win.close() }
     Shortcut {
         sequence: "Escape"
         enabled: win.idle
@@ -126,33 +168,26 @@ ApplicationWindow {
     }
 
     // The steps.
-    Shortcut { sequences: ["Left", "H"]; enabled: win.idle && !win.songFocus; onActivated: win.moveCursor(0, -1) }
-    Shortcut { sequences: ["Right", "L"]; enabled: win.idle && !win.songFocus; onActivated: win.moveCursor(0, 1) }
-    Shortcut { sequences: ["Up", "K"]; enabled: win.idle && !win.songFocus; onActivated: win.moveCursor(-1, 0) }
-    Shortcut { sequences: ["Down", "J"]; enabled: win.idle && !win.songFocus; onActivated: win.moveCursor(1, 0) }
+    Shortcut { sequence: "Left"; enabled: win.idle && !win.songFocus; onActivated: win.cursorStep = (win.cursorStep + 15) % 16 }
+    Shortcut { sequence: "Right"; enabled: win.idle && !win.songFocus; onActivated: win.cursorStep = (win.cursorStep + 1) % 16 }
+    Shortcut { sequence: "Up"; enabled: win.idle && !win.songFocus; onActivated: backend.selectPad((backend.selectedPad + 15) % 16) }
+    Shortcut { sequence: "Down"; enabled: win.idle && !win.songFocus; onActivated: backend.selectPad((backend.selectedPad + 1) % 16) }
     Shortcut {
-        sequences: ["Return", "Enter", "X"]
+        sequences: ["Return", "Enter"]
         enabled: win.idle && !win.songFocus
-        onActivated: backend.toggleStep(win.cursorTrack, win.cursorStep)
-    }
-    Shortcut {
-        sequences: ["Shift+Return", "Shift+Enter"]
-        enabled: win.idle && !win.songFocus
-        onActivated: backend.holdStep(win.cursorTrack, win.cursorStep)
+        onActivated: backend.toggleStep(backend.selectedPad, win.cursorStep)
     }
     Shortcut {
         sequences: ["Delete", "Backspace"]
         enabled: win.idle && !win.songFocus
-        onActivated: backend.clearStep(win.cursorTrack, win.cursorStep)
+        onActivated: backend.clearStep(backend.selectedPad, win.cursorStep)
     }
-    Shortcut { sequence: "Shift+Up"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(win.cursorTrack, win.cursorStep, 1) }
-    Shortcut { sequence: "Shift+Down"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(win.cursorTrack, win.cursorStep, -1) }
-    Shortcut { sequence: "Ctrl+Shift+Up"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(win.cursorTrack, win.cursorStep, 12) }
-    Shortcut { sequence: "Ctrl+Shift+Down"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(win.cursorTrack, win.cursorStep, -12) }
+    Shortcut { sequence: "Shift+Up"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(backend.selectedPad, win.cursorStep, 1) }
+    Shortcut { sequence: "Shift+Down"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(backend.selectedPad, win.cursorStep, -1) }
 
     // The song.
-    Shortcut { sequences: ["Left", "H"]; enabled: win.idle && win.songFocus; onActivated: win.moveSongCursor(-1) }
-    Shortcut { sequences: ["Right", "L"]; enabled: win.idle && win.songFocus; onActivated: win.moveSongCursor(1) }
+    Shortcut { sequence: "Left"; enabled: win.idle && win.songFocus; onActivated: win.moveSongCursor(-1) }
+    Shortcut { sequence: "Right"; enabled: win.idle && win.songFocus; onActivated: win.moveSongCursor(1) }
     Shortcut {
         sequences: ["I", "Insert"]
         enabled: win.idle && win.songFocus
@@ -171,61 +206,78 @@ ApplicationWindow {
         onActivated: { backend.selectPattern(backend.chain[win.songCursor]); win.songFocus = false }
     }
 
-    // Patterns 1 to 8: the one to edit, or, in the song, the one to play.
-    Repeater {
-        model: 8
-        Item {
-            required property int index
-            Shortcut {
-                sequence: String(index + 1)
-                enabled: win.idle
-                onActivated: win.songFocus ? win.typePattern(index) : backend.selectPattern(index)
-            }
-        }
-    }
-
     // Right-to-left languages mirror the window; the Translator sets the
-    // application's layout direction.
+    // application's layout direction. The pads play from the keyboard here:
+    // a press strikes, a release lets go, and a key held repeats with note
+    // repeat on rather than the keyboard's own repeat. Shift strikes harder.
     Item {
+        id: keys
         anchors.fill: parent
+        focus: true
         LayoutMirroring.enabled: win.rightToLeft
         LayoutMirroring.childrenInherit: true
 
+        Keys.onPressed: (event) => {
+            const pad = win.padFor(event)
+            if (pad < 0 || !win.idle)
+                return
+            event.accepted = true
+            if (!event.isAutoRepeat)
+                backend.padDown(pad, event.modifiers & Qt.ShiftModifier ? 4 : 3)
+        }
+        Keys.onReleased: (event) => {
+            const pad = win.padFor(event)
+            if (pad < 0)
+                return
+            event.accepted = true
+            if (!event.isAutoRepeat)
+                backend.padUp(pad)
+        }
+
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 20
-            spacing: 16
+            anchors.margins: 18
+            spacing: 12
 
-            // Transport: playing, tempo, swing, and what plays.
+            // Transport: play, record, tempo, swing, and the sound's grit.
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 24
+                spacing: 10
 
-                Rectangle {
-                    objectName: "transport"
-                    implicitWidth: playLabel.implicitWidth + 28
-                    implicitHeight: 34
-                    radius: Math.min(17, theme.radius)
-                    color: backend.playing ? theme.accent : win.alpha(theme.colors.selection, 0.8)
-                    Label {
-                        id: playLabel
-                        anchors.centerIn: parent
-                        text: backend.playing ? "■  " + qsTr("Stop") : "▶  " + qsTr("Play")
-                        color: backend.playing ? theme.accentForeground : theme.foreground
-                        font.bold: true
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: win.play()
-                    }
+                Chip {
+                    objectName: "play"
+                    text: backend.playing ? "■  " + qsTr("Stop") : "▶  " + qsTr("Play")
+                    on: backend.playing
+                    implicitHeight: 36
+                    onClicked: backend.togglePlay(win.chainStart())
+                }
+                Chip {
+                    objectName: "record"
+                    text: "●  " + qsTr("Rec")
+                    on: backend.recording
+                    onColor: theme.colors.red
+                    onTextColor: theme.background
+                    implicitHeight: 36
+                    onClicked: backend.toggleRecord(win.chainStart())
+                }
+                Chip {
+                    objectName: "repeat"
+                    text: qsTr("Repeat %1").arg(backend.repeatName)
+                    on: backend.repeat > 0
+                    bold: false
+                    implicitHeight: 36
+                    onClicked: backend.toggleRepeat()
+                    onPressAndHold: backend.cycleRepeat()
                 }
 
+                Item { implicitWidth: 6 }
+
                 Row {
-                    spacing: 6
+                    spacing: 5
                     Label {
                         objectName: "bpm"
                         text: backend.bpm.toLocaleString(Qt.locale(translator.language), 'f', 0)
-                        font.pixelSize: 26
+                        font.pixelSize: 24
                         font.bold: true
                         anchors.baseline: bpmUnit.baseline
                     }
@@ -233,16 +285,15 @@ ApplicationWindow {
                         id: bpmUnit
                         text: "BPM"
                         color: theme.colors.muted
-                        topPadding: 10
+                        topPadding: 9
                     }
                 }
-
                 Row {
-                    spacing: 6
+                    spacing: 5
                     Label {
                         objectName: "swing"
                         text: backend.swing.toLocaleString(Qt.locale(translator.language), 'f', 0) + "%"
-                        font.pixelSize: 26
+                        font.pixelSize: 24
                         font.bold: true
                         anchors.baseline: swingUnit.baseline
                     }
@@ -250,8 +301,25 @@ ApplicationWindow {
                         id: swingUnit
                         text: qsTr("swing")
                         color: theme.colors.muted
-                        topPadding: 10
+                        topPadding: 9
                     }
+                }
+
+                Item { implicitWidth: 6 }
+
+                Chip {
+                    objectName: "grit"
+                    text: Names.grit(backend.grit)
+                    on: backend.grit > 0
+                    bold: false
+                    onClicked: backend.cycleGrit()
+                }
+                Chip {
+                    objectName: "vinyl"
+                    text: qsTr("Vinyl")
+                    on: backend.vinyl
+                    bold: false
+                    onClicked: backend.toggleVinyl()
                 }
 
                 // What Space plays: the pattern being edited, or the song.
@@ -263,10 +331,10 @@ ApplicationWindow {
                             required property int index
                             required property string modelData
                             readonly property bool chosen: (index === 1) === backend.songMode
-                            implicitWidth: modeLabel.implicitWidth + 24
-                            implicitHeight: 30
+                            implicitWidth: modeLabel.implicitWidth + 22
+                            implicitHeight: 32
                             radius: Math.min(4, theme.radius)
-                            color: chosen ? win.alpha(theme.colors.selection, 1) : "transparent"
+                            color: chosen ? theme.colors.selection : "transparent"
                             border.color: theme.colors.selection
                             Label {
                                 id: modeLabel
@@ -274,10 +342,7 @@ ApplicationWindow {
                                 text: parent.modelData
                                 color: parent.chosen ? theme.foreground : theme.colors.muted
                             }
-                            MouseArea {
-                                anchors.fill: parent
-                                onClicked: if (!parent.chosen) backend.toggleSongMode()
-                            }
+                            TapHandler { onTapped: if (!parent.chosen) backend.toggleSongMode() }
                         }
                     }
                 }
@@ -290,10 +355,9 @@ ApplicationWindow {
                     text: qsTr("Exporting…")
                     color: theme.colors.muted
                 }
-
                 Label {
                     objectName: "fileName"
-                    Layout.maximumWidth: 260
+                    Layout.maximumWidth: 220
                     text: (backend.fileName || qsTr("Untitled")) + (backend.dirty ? " •" : "")
                     elide: Text.ElideMiddle
                     color: theme.colors.muted
@@ -318,8 +382,8 @@ ApplicationWindow {
                         readonly property bool chosen: backend.editPattern === index
                         readonly property bool used: backend.usedPatterns[index]
                         objectName: "pattern" + index
-                        implicitWidth: 34
-                        implicitHeight: 30
+                        implicitWidth: 36
+                        implicitHeight: 32
                         radius: Math.min(4, theme.radius)
                         color: chosen ? theme.accent : used ? win.alpha(theme.colors.selection, 0.9) : "transparent"
                         border.color: chosen ? theme.accent : theme.colors.selection
@@ -340,32 +404,41 @@ ApplicationWindow {
                             visible: backend.playing && backend.playPattern === parent.index && !parent.chosen
                             color: theme.accent
                         }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: backend.selectPattern(parent.index)
-                        }
+                        TapHandler { onTapped: backend.selectPattern(parent.index) }
                     }
                 }
 
                 Item { Layout.fillWidth: true }
             }
 
-            PatternGrid {
-                id: grid
-                objectName: "grid"
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                cursorTrack: win.cursorTrack
-                cursorStep: win.cursorStep
-                active: !win.songFocus
-                onCellPicked: (track, step) => {
-                    win.songFocus = false
-                    win.cursorTrack = track
-                    win.cursorStep = step
+                spacing: 20
+
+                PatternGrid {
+                    id: grid
+                    objectName: "grid"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    cursorStep: win.cursorStep
+                    active: !win.songFocus
+                    onCellPicked: (pad, step) => {
+                        win.songFocus = false
+                        win.cursorStep = step
+                    }
                 }
-                onTrackPicked: (track) => {
-                    win.songFocus = false
-                    win.cursorTrack = track
+
+                PadPanel {
+                    id: pads
+                    objectName: "pads"
+                    // A layout in a layout fills by default.
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: Math.min(380, win.width * 0.3)
+                    Layout.maximumWidth: Layout.preferredWidth
+                    Layout.fillHeight: true
+                    Layout.alignment: Qt.AlignTop
+                    onChopRequested: chop.open()
                 }
             }
 
@@ -396,6 +469,7 @@ ApplicationWindow {
                     case "exported": return qsTr("Exported %1").arg(m.arg)
                     case "copied": return qsTr("Copied pattern %1").arg(m.arg)
                     case "pasted": return qsTr("Pasted into pattern %1").arg(m.arg)
+                    case "chopped": return qsTr("Chopped onto %1 pads from pad %2").arg(m.arg).arg(m.detail)
                     case "saveFailed": return qsTr("Couldn't save %1: %2").arg(m.arg).arg(m.detail)
                     case "openFailed": return qsTr("Couldn't open %1: %2").arg(m.arg).arg(m.detail)
                     case "exportFailed": return qsTr("Couldn't export %1: %2").arg(m.arg).arg(m.detail)
@@ -405,9 +479,10 @@ ApplicationWindow {
                     case "deviceFailed": return qsTr("The sound output stopped working.")
                     case "pickerFailed": return qsTr("The file chooser didn't open: %1").arg(m.detail)
                     }
-                    return qsTr("Press ? for the shortcuts")
+                    return backend.recording ? qsTr("Recording: play the pads, they land on the nearest step")
+                                             : qsTr("Play the pads with 1–4, Q–R, A–F, Z–V. Press ? for the shortcuts")
                 }
-                color: error ? theme.colors.red : theme.colors.muted
+                color: error || backend.recording ? theme.colors.red : theme.colors.muted
                 elide: Text.ElideRight
             }
         }
@@ -419,7 +494,7 @@ ApplicationWindow {
         anchors.centerIn: Overlay.overlay
         modal: true
         focus: true
-        padding: 28
+        padding: 26
         background: Rectangle {
             color: theme.background
             border.color: theme.colors.selection
@@ -429,7 +504,7 @@ ApplicationWindow {
         GridLayout {
             columns: 4
             columnSpacing: 18
-            rowSpacing: 7
+            rowSpacing: 6
             // A popup is not an Item and doesn't inherit the window's
             // mirroring, so its content opts in.
             LayoutMirroring.enabled: win.rightToLeft
@@ -437,52 +512,61 @@ ApplicationWindow {
 
             Repeater {
                 model: [
+                    { keys: "1–4  Q–R  A–F  Z–V", action: qsTr("Play the pads; with Shift, harder") },
                     { keys: "Space", action: qsTr("Play or stop") },
+                    { keys: "Shift+Space", action: qsTr("Record the pads into the pattern") },
+                    { keys: "N  Shift+N", action: qsTr("Note repeat on or off, and its timing") },
                     { keys: "P", action: qsTr("Play the pattern or the song") },
-                    { keys: "← → ↑ ↓  h j k l", action: qsTr("Move between steps") },
-                    { keys: "Enter  x", action: qsTr("Turn a step on or off") },
-                    { keys: "Shift+Enter", action: qsTr("Hold the bass note through a step") },
-                    { keys: "Delete", action: qsTr("Clear a step") },
-                    { keys: "Shift+↑ ↓", action: qsTr("Louder or softer; a bass note up or down") },
-                    { keys: "Ctrl+Shift+↑ ↓", action: qsTr("A bass note up or down an octave") },
-                    { keys: "1 – 8", action: qsTr("Edit pattern A to H") },
-                    { keys: "Ctrl+C  Ctrl+V", action: qsTr("Copy and paste a pattern") },
-                    { keys: "Ctrl+Delete", action: qsTr("Clear the pattern") },
                     { keys: "[ ]  { }", action: qsTr("Tempo down or up, by 1 or 10") },
                     { keys: ", .", action: qsTr("Less or more swing") },
-                    { keys: "M  S", action: qsTr("Mute or solo the track") },
-                    { keys: "Shift+← →", action: qsTr("Track volume") },
-                    { keys: "O", action: qsTr("Load a sample onto the track") },
-                    { keys: "Shift+O", action: qsTr("Back to the built-in sound") },
+                    { keys: "G  Shift+G", action: qsTr("Grit, and vinyl") },
+                    { keys: "← → ↑ ↓", action: qsTr("Move between steps and pads") },
+                    { keys: "Enter", action: qsTr("Turn a step on or off") },
+                    { keys: "Delete", action: qsTr("Clear a step") },
+                    { keys: "Shift+↑ ↓", action: qsTr("A step louder or softer") },
+                    { keys: "- =  _ +", action: qsTr("Tune the pad by a semitone or an octave") },
+                    { keys: "Shift+← →", action: qsTr("Pad volume") },
+                    { keys: "M  Shift+M", action: qsTr("Mute or solo the pad") },
+                    { keys: "U", action: qsTr("The pad's mute group") },
+                    { keys: "O  Shift+O", action: qsTr("Load a sample onto the pad, or go back to the kit") },
+                    { keys: "K", action: qsTr("Chop a sample onto the pads") },
+                    { keys: "Ctrl+1 – 8  PgUp PgDn", action: qsTr("Edit pattern A to H") },
+                    { keys: "Ctrl+C  Ctrl+V", action: qsTr("Copy and paste a pattern") },
+                    { keys: "Ctrl+Delete", action: qsTr("Clear the pattern") },
                     { keys: "Tab", action: qsTr("Switch between the steps and the song") },
-                    { keys: "1 – 8", action: qsTr("In the song: set or add a pattern") },
+                    { keys: "Ctrl+1 – 8", action: qsTr("In the song: set or add a pattern") },
                     { keys: "I  Delete", action: qsTr("In the song: insert or remove a slot") },
-                    { keys: "Enter", action: qsTr("In the song: edit the pattern") },
                     { keys: "Ctrl+Z  Ctrl+Shift+Z", action: qsTr("Undo or redo") },
                     { keys: "Ctrl+N  Ctrl+O", action: qsTr("New or open a song") },
                     { keys: "Ctrl+S  Ctrl+Shift+S", action: qsTr("Save, or save as") },
                     { keys: "Ctrl+E", action: qsTr("Export the song as WAV") },
                     { keys: "?", action: qsTr("Show or hide the shortcuts") },
-                    { keys: "Q", action: qsTr("Quit") }
+                    { keys: "Ctrl+Q", action: qsTr("Quit") }
                 ]
                 delegate: RowLayout {
                     required property var modelData
                     Layout.columnSpan: 2
                     spacing: 14
                     Label {
-                        Layout.preferredWidth: 150
+                        Layout.preferredWidth: 160
                         text: modelData.keys
                         color: theme.accent
                         font.bold: true
                     }
                     Label {
-                        Layout.preferredWidth: 270
+                        Layout.preferredWidth: 280
                         text: modelData.action
                         wrapMode: Text.Wrap
                     }
                 }
             }
         }
+    }
+
+    ChopView {
+        id: chop
+        objectName: "chop"
+        rightToLeft: win.rightToLeft
     }
 
     ConfirmDialog {

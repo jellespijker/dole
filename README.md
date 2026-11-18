@@ -1,18 +1,36 @@
 # Dole
 
-![Dole playing a song](screenshot.png)
+![Dole playing a beat](screenshot.png)
 
-Dole is a loop machine for drums and a bassline. You get eight tracks with
-sixteen steps each. One-bar patterns A to H chain into a song, and the result
-exports to WAV. It's made for minimal, repetitive grooves: a hard kick and
-snare, a hi-hat, and a bass riff going round, with room left for a voice on
-top. Record the voice in your recorder of choice and mix it over the export.
+Dole is a sampler and sequencer that works like an MPC. It has sixteen pads
+you play with your fingers or the keyboard, with your hits recording into the
+pattern as it loops. You can chop a record onto the pads and pitch the chops
+down, and patterns chain into a song that exports to WAV. It's made for
+boom-bap: a lazy swing, a dusty kit, and an eerie loop.
 
-Every sound is built in: kick, snare, hat, open hat, clap, rim, cowbell, and a
-mono bass synth. Any track can load a sample instead (WAV, FLAC, MP3, anything
-`ffmpeg` reads). A chopped loop on step 1 plays through the bar, and a sample on
-the bass track is pitched by its notes. Swing, accents, and bass notes held
-across steps are all there. Dole follows the Omarchy theme and language.
+- **Pads.** Sixteen pads in a 4×4 grid, pad 1 at the bottom left. Play them
+  on a touch screen (several at once) or with the keys `1 2 3 4`, `Q W E R`,
+  `A S D F`, `Z X C V`, which go by where the key sits on any layout. Shift
+  hits harder.
+- **Record.** Shift+Space (or Rec) starts the loop and records what you play
+  onto the nearest sixteenth. A whole take undoes as one.
+- **Note repeat.** Turn it on with N and hold a pad to roll it at 1/8, 1/16,
+  1/32, or triplets (Shift+N, or a long press on Repeat).
+- **The kit.** Two kicks (boom and knock), two snares (crack and dusty), a
+  rim, a clap, closed and open hats, a shaker, a tom, a crash, a sword clang,
+  a minor piano stab, a bell, a sub bass on C2, and a horn stab. The hats
+  share a mute group, so the closed one cuts the open one off.
+- **Samples and chops.** Load any sample onto a pad (WAV, FLAC, MP3, anything
+  `ffmpeg` reads). Or press K to chop one: Dole slices it where it hits (or
+  into 4, 8, or 16 even pieces), you tap the slices to hear them, and then lay
+  them out on the pads. Tune each pad up or down by up to two octaves. As on
+  an MPC, pitch and speed change together, so a soul loop tuned down drags
+  and darkens. Basslines come from copies of a pad, each tuned to a note.
+- **Grit.** G steps the master through Clean, 12-bit (an SP-1200's 26 kHz and
+  12 bits), and Crushed. Shift+G adds vinyl crackle. Both are in the export.
+- **Swing** goes from straight to 75%. The demo loop sits at 58%.
+
+Dole follows the Omarchy theme and language.
 
 ```
 dole open [song.dole]
@@ -22,25 +40,29 @@ dole open [song.dole]
 
 | Keys | Action |
 | --- | --- |
+| 1–4, Q–R, A–F, Z–V | Play the pads; with Shift, harder |
 | Space | Play or stop |
+| Shift+Space | Record the pads into the pattern |
+| N, Shift+N | Note repeat on or off, and its timing |
 | P | Play the pattern being edited, or the song |
-| ← → ↑ ↓, h j k l | Move between steps |
-| Enter, x | Turn a step on or off |
-| Shift+Enter | Hold the bass note through a step |
-| Delete | Clear a step |
-| Shift+↑ ↓ | Louder or softer; a bass note up or down |
-| Ctrl+Shift+↑ ↓ | A bass note up or down an octave |
-| 1 – 8 | Edit pattern A to H (it takes over at the next bar) |
-| Ctrl+C, Ctrl+V | Copy and paste a pattern |
-| Ctrl+Delete | Clear the pattern |
 | [ ] and { } | Tempo down or up, by 1 or 10 |
 | , . | Less or more swing |
-| M, S | Mute or solo the track |
-| Shift+← → | Track volume |
-| O | Load a sample onto the track |
-| Shift+O | Back to the built-in sound |
+| G, Shift+G | Grit, and vinyl |
+| ← → ↑ ↓ | Move between steps and pads |
+| Enter | Turn a step on or off |
+| Delete | Clear a step |
+| Shift+↑ ↓ | A step louder or softer |
+| - = and _ + | Tune the pad by a semitone or an octave |
+| Shift+← → | Pad volume |
+| M, Shift+M | Mute or solo the pad |
+| U | The pad's mute group |
+| O, Shift+O | Load a sample onto the pad, or go back to the kit |
+| K | Chop a sample onto the pads |
+| Ctrl+1 – 8, PgUp, PgDn | Edit pattern A to H (it takes over at the next bar) |
+| Ctrl+C, Ctrl+V | Copy and paste a pattern |
+| Ctrl+Delete | Clear the pattern |
 | Tab | Switch between the steps and the song |
-| 1 – 8 (song) | Set the slot, or add one at the end |
+| Ctrl+1 – 8 (song) | Set the slot, or add one at the end |
 | I, Delete (song) | Insert or remove a slot |
 | Enter (song) | Edit the slot's pattern |
 | Ctrl+Z, Ctrl+Shift+Z | Undo or redo |
@@ -48,11 +70,10 @@ dole open [song.dole]
 | Ctrl+S, Ctrl+Shift+S | Save, or save as |
 | Ctrl+E | Export the song as WAV |
 | ? | Show or hide the shortcuts |
-| Q | Quit |
+| Ctrl+Q | Quit |
 
-You can also use the mouse. Click a step to turn it on, right-click to clear it
-(on the bass, to hold), and scroll over a step to change its level or note.
-Scroll over a track to change its volume, and click its sound to load a sample.
+In the chop view, ← → step through the slices and play each one, and Enter
+lays them out on the pads, starting from the pad that's selected.
 
 ## Songs are text
 
@@ -60,16 +81,17 @@ A song is a small JSON file that you, a script, or an agent can write:
 
 ```json
 {
-  "dole": 1, "bpm": 92, "swing": 54,
+  "dole": 2, "bpm": 88, "swing": 58, "grit": "12-bit", "vinyl": true,
+  "pads": { "9": { "sample": "soul.wav", "start": 1.25, "end": 1.9, "tune": -3 } },
   "patterns": {
     "A": {
-      "kick":  "X.....x...X.....",
-      "snare": "....X.......X...",
-      "hat":   "x.o.x.o.x.o.x.o.",
-      "bass":  "C2 - - - . . C2 . D#2 - . F2 . . G1 -"
+      "1": "X......x..x.....",
+      "3": "....X.......X...",
+      "7": "x.o.x.o.x.o.x.oo",
+      "9": "x.......x......."
     }
   },
-  "song": ["A", "A", "B", "A"]
+  "song": ["A", "A", "A", "B"]
 }
 ```
 
@@ -78,7 +100,7 @@ each takes `--json` and exits 0 or 1:
 
 | Command | |
 | --- | --- |
-| `dole new song.dole` | Start a song from a short groove (`--empty` for none) |
+| `dole new song.dole` | Start a song from the demo loop (`--empty` for none) |
 | `dole check song.dole` | Report every problem, and the tempo, patterns, and length |
 | `dole render song.dole -o song.wav` | Render the song (`--pattern B --bars 4` for one pattern) |
 | `dole skill install` | Install the agent skill for Claude Code and Codex |
@@ -96,5 +118,5 @@ cmake --install build --prefix ~/.local  # add it to the app launcher
 
 ## License
 
-MIT. The theme, translator, file picker, and command line follow Omacut,
-Hype, and the other Omarchy apps by David Heinemeier Hansson.
+MIT. The theme, translator, file picker, command line, and dialog buttons
+follow Omacut, Hype, and the other Omarchy apps by David Heinemeier Hansson.

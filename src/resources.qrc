@@ -5,6 +5,10 @@
         <file alias="SongStrip.qml">SongStrip.qml</file>
         <file alias="ConfirmDialog.qml">ConfirmDialog.qml</file>
         <file alias="DialogButton.qml">DialogButton.qml</file>
+        <file alias="PadPanel.qml">PadPanel.qml</file>
+        <file alias="ChopView.qml">ChopView.qml</file>
+        <file alias="Chip.qml">Chip.qml</file>
+        <file alias="Names.js">Names.js</file>
         <file alias="dole.svg">../share/dole.svg</file>
         <file alias="skill.md">skill.md</file>
         <file alias="format.md">format.md</file>

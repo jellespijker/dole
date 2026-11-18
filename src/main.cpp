@@ -1,4 +1,4 @@
-// dole — a loop sequencer for drums and a bassline.
+// dole — an MPC-style sampler and sequencer: sixteen pads, chops, and patterns.
 
 #include <QCommandLineParser>
 #include <QFileInfo>
@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
         return runCli(app.arguments());
 
     QCommandLineParser args;
-    args.setApplicationDescription("A loop sequencer for drums and a bassline.\n\n" + cliSummary());
+    args.setApplicationDescription("An MPC-style sampler and sequencer.\n\n" + cliSummary());
     args.addHelpOption();
     args.addVersionOption();
     args.addPositionalArgument("open", "Open the window", "open");

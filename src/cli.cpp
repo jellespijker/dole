@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -50,7 +51,7 @@ double seconds(const Song &song, int bars) {
 }
 
 // Loads the song and decodes its samples; a problem anywhere is an error.
-bool load(const QString &path, Song *song, std::array<SampleBuffer, kTracks> *sounds, QStringList *problems) {
+bool load(const QString &path, Song *song, std::array<SampleBuffer, kPads> *sounds, QStringList *problems) {
     if (path.isEmpty()) {
         *problems << "Name a .dole song file.";
         return false;
@@ -60,22 +61,31 @@ bool load(const QString &path, Song *song, std::array<SampleBuffer, kTracks> *so
         *problems << path + ": " + error;
         return false;
     }
-    for (int t = 0; t < kTracks; ++t) {
-        const QString &sample = song->tracks[t].sample;
-        if (sample.isEmpty()) {
-            (*sounds)[t] = builtInSound(t);
+    QHash<QString, SampleBuffer> decoded;
+    for (int p = 0; p < kPads; ++p) {
+        const Pad &pad = song->pads[p];
+        if (pad.sample.isEmpty()) {
+            (*sounds)[p] = kitSound(p);
             continue;
         }
-        (*sounds)[t] = decodeSample(sample, &error);
-        if (!(*sounds)[t])
-            *problems << QString("Track %1: %2: %3")
-                             .arg(trackIds()[t], sample, error == kNoFfmpeg ? "ffmpeg is not installed" : error);
+        if (!decoded.contains(pad.sample))
+            decoded.insert(pad.sample, decodeSample(pad.sample, &error));
+        const SampleBuffer whole = decoded.value(pad.sample);
+        if (!whole) {
+            *problems << QString("Pad %1: %2: %3")
+                             .arg(p + 1)
+                             .arg(pad.sample, error == kNoFfmpeg ? "ffmpeg is not installed" : error);
+            continue;
+        }
+        (*sounds)[p] = slice(whole, pad.start, pad.end);
+        if (!(*sounds)[p])
+            *problems << QString("Pad %1: the chop from %2 s to %3 s is outside the sample.").arg(p + 1).arg(pad.start).arg(pad.end);
     }
     return problems->isEmpty();
 }
 
 int create(const QStringList &arguments) {
-    Command command("new", "Start a song: a short demo groove, or with --empty nothing at all.");
+    Command command("new", "Start a song: a dark boom-bap loop, or with --empty nothing at all.");
     command.parser.addOption({"empty", "Start with no steps"});
     command.json();
     command.parser.process(arguments);
@@ -99,7 +109,7 @@ int check(const QStringList &arguments) {
     command.json();
     command.parser.process(arguments);
     Song song;
-    std::array<SampleBuffer, kTracks> sounds;
+    std::array<SampleBuffer, kPads> sounds;
     QStringList problems;
     const bool ok = load(command.argument(1), &song, &sounds, &problems);
 
@@ -125,6 +135,8 @@ int check(const QStringList &arguments) {
         if (ok) {
             result.insert("bpm", song.bpm);
             result.insert("swing", song.swing);
+            result.insert("grit", gritName(song.grit));
+            result.insert("vinyl", song.vinyl);
             result.insert("patterns", QJsonArray::fromStringList(used));
             result.insert("song", QJsonArray::fromStringList(chain));
             result.insert("bars", bars);
@@ -137,9 +149,10 @@ int check(const QStringList &arguments) {
         if (ok) {
             for (const QString &warning : warnings)
                 print(stdout, "warning: " + warning);
-            print(stdout, QString("%1 BPM, swing %2%, patterns %3, song %4 (%5 bars, %6 s)")
+            print(stdout, QString("%1 BPM, swing %2%, %3%4, patterns %5, song %6 (%7 bars, %8 s)")
                               .arg(song.bpm)
                               .arg(song.swing)
+                              .arg(gritName(song.grit), song.vinyl ? " with vinyl" : "")
                               .arg(used.isEmpty() ? "none" : used.join(" "), chain.isEmpty() ? "empty" : chain.join(" "))
                               .arg(bars)
                               .arg(seconds(song, bars), 0, 'f', 1));
@@ -160,7 +173,7 @@ int render(const QStringList &arguments) {
         return fail("Name the WAV file to write with -o.");
 
     Song song;
-    std::array<SampleBuffer, kTracks> sounds;
+    std::array<SampleBuffer, kPads> sounds;
     QStringList problems;
     if (!load(command.argument(1), &song, &sounds, &problems)) {
         for (const QString &problem : problems)
@@ -243,8 +256,8 @@ int help(const QStringList &arguments) {
 } // namespace
 
 QString cliSummary() {
-    return "Sequencer:\n"
-           "  open [song]                   Open the window, on a song or a demo groove\n\n"
+    return "Sampler and sequencer:\n"
+           "  open [song]                   Open the window, on a song or a demo loop\n\n"
            "Commands that need no display (dole help <command> for options):\n"
            "  new <song>                    Start a song file\n"
            "  check <song>                  Report every problem, and summarize the song\n"
