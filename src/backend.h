@@ -10,6 +10,7 @@
 
 #include "engine.h"
 #include "filepicker.h"
+#include "plugin.h"
 #include "song.h"
 
 // The song being made, as the window sees it: every edit goes through here,
@@ -41,6 +42,10 @@ class Backend : public QObject {
     Q_PROPERTY(QString chopState READ chopState NOTIFY chopChanged)
     Q_PROPERTY(QVariantList chopPeaks READ chopPeaks NOTIFY chopChanged)
     Q_PROPERTY(QVariantList chopSlices READ chopSlices NOTIFY chopChanged)
+    Q_PROPERTY(QVariantList plugins READ plugins NOTIFY pluginsChanged)
+    Q_PROPERTY(bool scanning READ scanning NOTIFY pluginsChanged)
+    Q_PROPERTY(int rackTarget READ rackTarget NOTIFY rackChanged)
+    Q_PROPERTY(QVariantMap rack READ rack NOTIFY rackChanged)
     Q_PROPERTY(QString fileName READ fileName NOTIFY fileChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
     Q_PROPERTY(QVariantMap message READ message NOTIFY messageChanged)
@@ -73,6 +78,10 @@ public:
     QString chopState() const;
     QVariantList chopPeaks() const { return m_chopPeaks; }
     QVariantList chopSlices() const;
+    QVariantList plugins() const;
+    bool scanning() const { return m_scanning; }
+    int rackTarget() const { return m_rackTarget; }
+    QVariantMap rack() const;
     QString fileName() const;
     QString path() const { return m_path; }
     bool exporting() const { return m_exporting; }
@@ -122,6 +131,21 @@ public:
     // Puts the chops on the pads from the first one on, and says how many fit.
     Q_INVOKABLE int assignChops(int firstPad);
 
+    // Plugins: a synth on a pad, and effects on a pad or (target -1) the
+    // master. An effect is named by its index in the chain; -1 is the synth.
+    Q_INVOKABLE void setRackTarget(int target);
+    Q_INVOKABLE void scanPlugins();
+    void setScanCommand(const QString &program, const QStringList &arguments);
+    Q_INVOKABLE void addEffect(int target, const QString &id);
+    Q_INVOKABLE void removeEffect(int target, int index);
+    Q_INVOKABLE void moveEffect(int target, int index, int delta);
+    Q_INVOKABLE void toggleBypass(int target, int index);
+    Q_INVOKABLE void setSynth(int pad, const QString &id);
+    Q_INVOKABLE void cycleLength(int pad);
+    // Returns how the new value reads, for the slider's label.
+    Q_INVOKABLE QString setParameter(int target, int index, const QString &id, double value);
+    Q_INVOKABLE void openEditor(int target, int index);
+
     // Playing and recording: the song from one of its slots, or the pattern
     // being edited.
     Q_INVOKABLE void togglePlay(int chainStart = 0);
@@ -159,6 +183,8 @@ signals:
     void repeatChanged();
     void positionChanged();
     void chopChanged();
+    void pluginsChanged();
+    void rackChanged();
     void fileChanged();
     void exportingChanged();
     void messageChanged();
@@ -183,6 +209,28 @@ private:
     void onPosition(int chainIndex, int pattern, int step);
     void record(int pad, int pattern, int step, int level, bool suppress);
     SampleBuffer padSound(const Pad &pad) const;
+    void syncRack();
+    // The chain a target names, in a song.
+    QVector<PluginSlot> &chainOf(Song &song, int target) const;
+    PluginSlot *slotAt(Song &song, int target, int index) const;
+    static QString slotKey(int target, int index);
+    QString pluginName(const QString &id) const;
+    // Brings what a plugin's own window changed into the song.
+    void pullPlugin(const QString &key);
+    void pullPlugins();
+
+    struct Live {
+        PluginSlot applied;
+        std::shared_ptr<Processor> processor;
+        QString error;
+    };
+    QHash<QString, Live> m_live;
+    QVector<PluginInfo> m_plugins = builtinPlugins();
+    bool m_scanning = false;
+    bool m_scanned = false;
+    QString m_scanProgram;
+    QStringList m_scanArguments;
+    int m_rackTarget = 0;
 
     Engine *m_engine;
     FilePicker *m_picker;

@@ -155,7 +155,10 @@ QMap<QString, bool> translatables(const QString &folder, QStringList *problems) 
 } // namespace
 
 
+#include "builtins.h"
 #include "chop.h"
+#include "plugin.h"
+#include "rack.h"
 #include "renderer.h"
 #include "song.h"
 #include "sounds.h"
@@ -186,6 +189,9 @@ public:
     void preview(const SampleBuffer &sound, double) override {
         calls << QString("preview %1").arg(sound ? sound->size() / 2 : 0);
     }
+    void setRack(const Rack &r) override { rack = r; }
+    void locked(const std::function<void()> &work) override { work(); }
+    Rack rack;
 };
 
 // Answers every dialog with one path, or dismisses it when there is none.
@@ -290,7 +296,233 @@ class DoleTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void initTestCase() { QQuickStyle::setStyle("Material"); }
+    void initTestCase() {
+        QQuickStyle::setStyle("Material");
+        // The tests' own plugins, and none of the machine's.
+        qputenv("CLAP_PATH", TEST_PLUGINS "/clap");
+        qputenv("LV2_PATH", TEST_PLUGINS "/lv2");
+    }
+
+    // Plugins.
+
+    void builtinEffectsMakeNoise() {
+        const Transport transport{120, true, 0};
+        auto run = [&](const QString &id, const QMap<QString, double> &params, std::function<float(int)> input, int frames) {
+            QString error;
+            auto effect = createProcessor(PluginSlot{id, params, {}, false}, &error);
+            QVector<float> left(frames), right(frames);
+            for (int i = 0; i < frames; ++i)
+                left[i] = right[i] = input(i);
+            for (int done = 0; done < frames; done += kMaxBlock) {
+                const int n = std::min(kMaxBlock, frames - done);
+                Transport t = transport;
+                t.position = done / 6000.0;
+                effect->process(left.data() + done, right.data() + done, n, nullptr, 0, t);
+            }
+            return left;
+        };
+        auto sine = [](int i) { return float(0.1 * std::sin(i * 2 * M_PI * 220 / kRate)); };
+        auto impulse = [](int i) { return i == 0 ? 1.f : 0.f; };
+        auto loudest = [](const QVector<float> &x, int from, int to) {
+            float m = 0;
+            for (int i = from; i < to && i < x.size(); ++i)
+                m = std::max(m, std::abs(x[i]));
+            return m;
+        };
+
+        // Overdrive turns a quiet sine into a loud, square one.
+        QVERIFY(loudest(run("overdrive", {{"drive", 1}}, sine, 4800), 2400, 4800) > 0.4f);
+        // Two bits leave hardly any levels.
+        const QVector<float> crushed = run("bitcrush", {{"bits", 2}, {"rate", 48000}}, sine, 4800);
+        QSet<float> levels(crushed.begin(), crushed.end());
+        QVERIFY2(levels.size() <= 3, qPrintable(QString::number(levels.size())));
+        // The comb rings on after a click, the delay echoes it.
+        QVERIFY(loudest(run("comb", {{"freq", 100}, {"feedback", 1}, {"mix", 1}}, impulse, 24000), 9600, 24000) > 0.01f);
+        const QVector<float> echoed = run("delay", {{"time", 0.25}, {"mix", 1}, {"feedback", 0}}, impulse, 24000);
+        QVERIFY(loudest(echoed, 100, 11000) < 1e-3f);
+        QVERIFY(loudest(echoed, 11990, 12010) > 0.1f);
+        // The ring modulator flips a steady signal's sign.
+        const QVector<float> rung = run("ringmod", {{"freq", 1000}, {"shape", 1}}, [](int) { return 0.5f; }, 480);
+        QVERIFY(*std::min_element(rung.begin(), rung.end()) < -0.4f);
+        // The stutter cuts every sixteenth in half, in time with the song.
+        const QVector<float> cut = run("stutter", {{"rate", 2}, {"duty", 0.5}}, [](int) { return 1.f; }, 12000);
+        QVERIFY(cut[1500] > 0.99f);
+        QVERIFY(cut[4500] < 0.01f);
+        QVERIFY(cut[7500] > 0.99f);
+    }
+
+    void pluginsAreFound() {
+        const QVector<PluginInfo> found = scanPlugins();
+        QStringList ids;
+        for (const PluginInfo &info : found)
+            ids << info.id;
+        for (const char *id : {"overdrive", "bitcrush", "ringmod", "comb", "delay", "stutter", "clap:dole.test.gain",
+                               "clap:dole.test.sine", "lv2:urn:dole:test-gain"})
+            QVERIFY2(ids.contains(id), id);
+        for (const PluginInfo &info : found)
+            QCOMPARE(info.instrument, info.id == "clap:dole.test.sine");
+    }
+
+    void clapPluginsPlay() {
+        QString error;
+        auto gain = createProcessor(PluginSlot{"clap:dole.test.gain", {{"7", 0.5}}, {}, false}, &error);
+        QVERIFY2(gain, qPrintable(error));
+        QCOMPARE(gain->name(), QString("Test Gain"));
+        QVERIFY(!gain->instrument());
+        QVector<float> left(256, 1.f), right(256, 1.f);
+        gain->process(left.data(), right.data(), 256, nullptr, 0, {});
+        QCOMPARE(left[100], 0.5f);
+        QCOMPARE(gain->valueText("7", 0.5), QString("50%"));
+
+        // Its state carries over into another instance.
+        const QByteArray state = gain->saveState();
+        QCOMPARE(state.size(), int(sizeof(double)));
+        auto copy = createProcessor(PluginSlot{"clap:dole.test.gain", {}, state, false}, &error);
+        QCOMPARE(copy->parameters().first().value, 0.5);
+
+        auto sine = createProcessor(PluginSlot{"clap:dole.test.sine", {}, {}, false}, &error);
+        QVERIFY(sine->instrument());
+        const NoteEvent notes[] = {{0, 69, 1, true}, {128, 69, 0, false}};
+        std::fill(left.begin(), left.end(), 0.f);
+        sine->process(left.data(), right.data(), 256, notes, 2, {});
+        QVERIFY(*std::max_element(left.begin(), left.begin() + 128) > 0.3f);
+        QCOMPARE(*std::max_element(left.begin() + 129, left.end()), 0.f);
+
+        QVERIFY(!createProcessor(PluginSlot{"clap:no.such.plugin", {}, {}, false}, &error));
+        QCOMPARE(error, QString("it isn't installed"));
+    }
+
+    void lv2PluginsPlay() {
+        QString error;
+        auto gain = createProcessor(PluginSlot{"lv2:urn:dole:test-gain", {{"gain", 1.5}}, {}, false}, &error);
+        QVERIFY2(gain, qPrintable(error));
+        QCOMPARE(gain->name(), QString("Test LV2 Gain"));
+        QCOMPARE(gain->parameters().size(), 1);
+        QCOMPARE(gain->parameters().first().max, 2.0);
+        QVector<float> left(256, 0.5f), right(256, 0.5f);
+        gain->process(left.data(), right.data(), 256, nullptr, 0, {});
+        QCOMPARE(left[10], 0.75f);
+        QVERIFY(!createProcessor(PluginSlot{"lv2:urn:nothing", {}, {}, false}, &error));
+    }
+
+    void songsKeepTheirPlugins() {
+        QTemporaryDir dir;
+        Song song;
+        song.pads[3].synth = PluginSlot{"clap:dole.test.sine", {{"1", 0.25}}, QByteArray("\x01\x02", 2), false};
+        song.pads[3].length = 4;
+        song.pads[3].effects << PluginSlot{"overdrive", {{"drive", 0.9}}, {}, true} << PluginSlot{"comb", {}, {}, false};
+        song.master << PluginSlot{"lv2:urn:dole:test-gain", {{"gain", 0.5}}, {}, false};
+        QString error;
+        QVERIFY(saveSong(dir.filePath("p.dole"), song, &error));
+        Song loaded;
+        QVERIFY2(loadSong(dir.filePath("p.dole"), &loaded, &error), qPrintable(error));
+        QVERIFY(loaded == song);
+        QVERIFY(!songFromJson(QJsonDocument::fromJson(R"({"dole": 2, "pads": {"1": {"length": 3}}})").object(), {}, &loaded, &error));
+        QVERIFY(error.contains("\"length\""));
+        QVERIFY(!songFromJson(QJsonDocument::fromJson(R"({"dole": 2, "master": [{"params": {}}]})").object(), {}, &loaded, &error));
+        QVERIFY(error.contains("needs a \"plugin\""));
+    }
+
+    void padsPlayThroughTheirPlugins() {
+        // At 120 BPM a step is 6000 frames; the synth's note lasts one.
+        Song song = songFrom(R"({"dole": 2, "bpm": 120,
+            "pads": {"15": {"synth": {"plugin": "clap:dole.test.sine"}},
+                     "1": {"effects": [{"plugin": "clap:dole.test.gain", "params": {"7": 0}}]}},
+            "patterns": {"A": {"15": "x...............", "1": "....x..........."}}, "song": ["A"]})");
+        QStringList problems;
+        Rack rack = buildRack(song, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join('\n')));
+        QVector<float> audio = renderSong(song, kit(), rack, 0);
+        QVERIFY(peak(audio, 0, 5000) > 0.1f);
+        QVERIFY(peak(audio, 6500, 24000) < 1e-3f);
+        // The gain at zero silences the boom; bypassed, it comes through.
+        QVERIFY(peak(audio, 24000, 30000) < 1e-3f);
+        song.pads[0].effects[0].bypass = true;
+        rack = buildRack(song, &problems);
+        audio = renderSong(song, kit(), rack, 0);
+        QVERIFY(peak(audio, 24000, 30000) > 0.1f);
+        // A master effect has the whole mix.
+        song.master << PluginSlot{"clap:dole.test.gain", {{"7", 0}}, {}, false};
+        rack = buildRack(song, &problems);
+        QCOMPARE(peak(renderSong(song, kit(), rack, 0), 0, 48000), 0.f);
+        // A plugin that isn't there is said, and left out.
+        song.master << PluginSlot{"clap:gone", {}, {}, false};
+        buildRack(song, &problems);
+        QCOMPARE(problems.size(), 1);
+        QVERIFY(problems.first().contains("isn't installed"));
+    }
+
+    void backendWiresPluginsIn() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.setRackTarget(2);
+        backend.addEffect(2, "overdrive");
+        QCOMPARE(engine.rack.effects[2].size(), 1);
+        const QVariantMap rack = backend.rack();
+        const QVariantMap overdrive = rack.value("effects").toList().first().toMap();
+        QCOMPARE(overdrive.value("name").toString(), QString("Overdrive"));
+        QCOMPARE(overdrive.value("params").toList().size(), 4);
+        QCOMPARE(backend.pads()[2].toMap().value("effects").toInt(), 1);
+
+        // Sliding a control is heard at once, and undoes as one.
+        auto processor = engine.rack.effects[2][0].processor;
+        QCOMPARE(backend.setParameter(2, 0, "drive", 0.8), QString("80%"));
+        backend.setParameter(2, 0, "drive", 0.9);
+        QCOMPARE(processor->parameters().first().value, 0.9);
+        backend.undo();
+        QCOMPARE(processor->parameters().first().value, 0.5);
+        QVERIFY(engine.rack.effects[2][0].processor == processor);
+
+        backend.addEffect(2, "comb");
+        backend.moveEffect(2, 1, -1);
+        QCOMPARE(backend.song().pads[2].effects.first().id, QString("comb"));
+        backend.toggleBypass(2, 0);
+        QVERIFY(engine.rack.effects[2][0].bypass);
+        backend.removeEffect(2, 0);
+        QCOMPARE(engine.rack.effects[2].size(), 1);
+        backend.addEffect(2, "delay");
+        backend.addEffect(2, "delay");
+        backend.addEffect(2, "delay");
+        backend.addEffect(2, "delay");
+        QCOMPARE(backend.message().value("kind").toString(), QString("chainFull"));
+
+        backend.setSynth(14, "clap:dole.test.sine");
+        QVERIFY(engine.rack.synths[14]);
+        QCOMPARE(backend.pads()[14].toMap().value("synth").toString(), QString("Test Sine"));
+        backend.cycleLength(14);
+        QCOMPARE(backend.song().pads[14].length, 2);
+
+        backend.addEffect(-1, "clap:no.such");
+        QCOMPARE(backend.message().value("kind").toString(), QString("pluginFailed"));
+        QVERIFY(engine.rack.master.isEmpty());
+    }
+
+    void aPluginsOwnChangesComeBackIntoTheSong() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.addEffect(-1, "clap:dole.test.gain");
+        auto processor = engine.rack.master.first().processor;
+        const double quarter = 0.25;
+        processor->loadState(QByteArray(reinterpret_cast<const char *>(&quarter), sizeof quarter));
+        QVERIFY(processor->onEdited);
+        processor->onEdited();
+        QCOMPARE(backend.song().master.first().state, processor->saveState());
+        QVERIFY(engine.rack.master.first().processor == processor);
+    }
+
+    void pluginsAreFoundInAProcessOfTheirOwn() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        QCOMPARE(backend.plugins().size(), 6);
+        backend.setScanCommand(DOLE_BINARY, {"plugins", "--json"});
+        backend.scanPlugins();
+        QVERIFY(backend.scanning());
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.scanning(), 10000);
+        QCOMPARE(backend.plugins().size(), 9);
+    }
 
     // The song and its file.
 
@@ -539,7 +771,7 @@ private slots:
         const Song song = songFrom(R"({"dole": 2, "bpm": 120, "patterns": {"A": {"boom": "x...............",
                                                                                    "openhat": "..............x."}},
                                          "song": ["A", "A"]})");
-        const QVector<float> audio = renderSong(song, kit(), 0);
+        const QVector<float> audio = renderSong(song, kit(), Rack{}, 0);
         const qsizetype bars = 2 * 16 * 6000;
         QVERIFY(audio.size() / 2 > bars);
         QVERIFY(audio.size() / 2 < bars + kRate);
@@ -1215,6 +1447,61 @@ private slots:
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(!chop->property("visible").toBool());
         QCOMPARE(backend.song().pads[3].start, 1.5);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+    void chainViewAddsEffects() {
+        QTemporaryDir dir;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        QQmlApplicationEngine qml;
+        QStringList warnings;
+        connect(&qml, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        qml.rootContext()->setContextProperty("translator", &translator);
+        qml.rootContext()->setContextProperty("theme", &theme);
+        qml.rootContext()->setContextProperty("backend", &backend);
+        qml.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+
+        backend.selectPad(3);
+        auto *chain = window->findChild<QObject *>("chain");
+        QTest::keyClick(window, Qt::Key_J);
+        QTRY_VERIFY(chain->property("opened").toBool());
+        QCOMPARE(backend.rackTarget(), 3);
+
+        auto *add = findItem(window->contentItem(), "addEffect");
+        QVERIFY(add);
+        QTest::mouseClick(window, Qt::LeftButton, {}, add->mapToScene(QPointF(10, 10)).toPoint());
+        auto *browser = window->findChild<QObject *>("browser");
+        QTRY_VERIFY(browser->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Down); // Bitcrush
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!browser->property("visible").toBool());
+        QCOMPARE(backend.song().pads[3].effects.size(), 1);
+        QCOMPARE(backend.song().pads[3].effects.first().id, QString("bitcrush"));
+        QVERIFY(findItem(window->contentItem(), "param_bits"));
+
+        // Space turns it off, Delete takes it away.
+        QTest::keyClick(window, Qt::Key_Space);
+        QVERIFY(backend.song().pads[3].effects.first().bypass);
+        QTest::keyClick(window, Qt::Key_Delete);
+        QVERIFY(backend.song().pads[3].effects.isEmpty());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!chain->property("visible").toBool());
+
+        // Shift+J is the master's.
+        QTest::keyClick(window, Qt::Key_J, Qt::ShiftModifier);
+        QTRY_VERIFY(chain->property("opened").toBool());
+        QCOMPARE(backend.rackTarget(), -1);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 

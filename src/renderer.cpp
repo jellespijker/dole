@@ -13,7 +13,10 @@ const char *repeatName(int division) {
     return division > 0 && division < kRepeatDivisions ? names[division] : "";
 }
 
-Renderer::Renderer() = default;
+Renderer::Renderer() {
+    m_heldKey.fill(-1);
+    m_releaseAt.fill(0);
+}
 
 void Renderer::setSong(const Song &song) {
     m_song = song;
@@ -50,6 +53,9 @@ void Renderer::cue(int pattern) {
 void Renderer::stop() {
     m_playing = false;
     m_suppressed.clear();
+    // Synths let go of their notes, as a drum machine's would ring out.
+    for (int p = 0; p < kPads; ++p)
+        noteOff(p, m_frame);
 }
 
 bool Renderer::sounding() const {
@@ -57,6 +63,9 @@ bool Renderer::sounding() const {
         for (const Voice &voice : voices)
             if (voice.active)
                 return true;
+    for (int key : m_heldKey)
+        if (key >= 0)
+            return true;
     return m_preview.active;
 }
 
@@ -98,16 +107,34 @@ double Renderer::triggerTime(int step) const {
     return step + ((step & 1) ? (m_song.swing - 50) / 50.0 : 0.0);
 }
 
-void Renderer::trigger(int pad, float gain) {
-    if (!m_sounds[pad])
+void Renderer::noteOff(int pad, int frame) {
+    if (m_heldKey[pad] < 0)
         return;
+    m_notes[pad] << NoteEvent{frame, m_heldKey[pad], 0.f, false};
+    m_heldKey[pad] = -1;
+}
+
+void Renderer::trigger(int pad, float gain) {
     // A pad in a mute group silences the others in it.
     const int group = m_song.pads[pad].group;
     if (group > 0)
         for (int other = 0; other < kPads; ++other)
-            if (other != pad && m_song.pads[other].group == group)
+            if (other != pad && m_song.pads[other].group == group) {
                 for (Voice &voice : m_voices[other])
                     cut(voice);
+                noteOff(other, m_frame);
+            }
+    // A synth pad plays a note: middle C, tuned, held for the pad's length.
+    if (isSynth(pad)) {
+        noteOff(pad, m_frame);
+        const int key = qBound(0, 60 + m_song.pads[pad].tune, 127);
+        m_notes[pad] << NoteEvent{m_frame, key, gain, true};
+        m_heldKey[pad] = key;
+        m_releaseAt[pad] = m_frame + m_song.pads[pad].length * stepFrames();
+        return;
+    }
+    if (!m_sounds[pad])
+        return;
     auto &voices = m_voices[pad];
     // The voice still playing fades out under the new one, rather than
     // stopping on a click.
@@ -213,6 +240,18 @@ void Renderer::master(float *left, float *right) {
 }
 
 void Renderer::render(float *out, int frames, const StepCallback &onStep, const RepeatCallback &onRepeat) {
+    for (int done = 0; done < frames;) {
+        const int block = std::min(kMaxBlock, frames - done);
+        renderBlock(out + 2 * done, block, onStep ? StepCallback([&, done](int c, int p, int s, int f) { onStep(c, p, s, f + done); }) : StepCallback(),
+                    onRepeat ? RepeatCallback([&, done](int pad, int p, int s, int f) { onRepeat(pad, p, s, f + done); }) : RepeatCallback());
+        done += block;
+    }
+    for (Suppressed &s : m_suppressed)
+        s.framesLeft -= frames;
+    m_suppressed.removeIf([](const Suppressed &s) { return s.framesLeft <= 0; });
+}
+
+void Renderer::renderBlock(float *out, int frames, const StepCallback &onStep, const RepeatCallback &onRepeat) {
     std::array<float, kPads> gains;
     for (int p = 0; p < kPads; ++p)
         gains[p] = m_song.audible(p) ? float(m_song.pads[p].volume) : 0.f;
@@ -221,8 +260,14 @@ void Renderer::render(float *out, int frames, const StepCallback &onStep, const 
     bool anyHeld = false;
     for (int level : m_held)
         anyHeld = anyHeld || level > 0;
+    const Transport transport{double(m_song.bpm), m_playing, m_position};
+    std::fill(m_padBuffers.begin(), m_padBuffers.end(), 0.f);
+    std::fill(m_masterBuffer.begin(), m_masterBuffer.end(), 0.f);
 
+    // The sequence, a frame at a time: steps and repeats strike pads, and
+    // the sample pads' voices play into their own buffers.
     for (int i = 0; i < frames; ++i) {
+        m_frame = i;
         if (m_playing) {
             while (m_nextStep < kSteps && m_position >= triggerTime(m_nextStep)) {
                 fire(m_nextStep);
@@ -242,19 +287,17 @@ void Renderer::render(float *out, int frames, const StepCallback &onStep, const 
             m_nextRepeat = (std::floor(repeatClock() / division) + 1) * division;
         }
 
-        float left = 0, right = 0;
-        for (int p = 0; p < kPads; ++p)
+        for (int p = 0; p < kPads; ++p) {
+            float left = 0, right = 0;
             for (Voice &voice : m_voices[p])
-                mixVoice(voice, gains[p], &left, &right);
+                mixVoice(voice, 1, &left, &right);
+            padChannel(p, 0)[i] = left;
+            padChannel(p, 1)[i] = right;
+        }
+        float left = 0, right = 0;
         mixVoice(m_preview, 1, &left, &right);
-
-        // A soft limit, so a busy bar thickens rather than clips, with room
-        // left for the grit's drive.
-        left = std::tanh(left * 0.7f);
-        right = std::tanh(right * 0.7f);
-        master(&left, &right);
-        out[2 * i] = left;
-        out[2 * i + 1] = right;
+        m_masterBuffer[i] = left;
+        m_masterBuffer[kMaxBlock + i] = right;
 
         m_freeClock += stepsPerFrame;
         if (m_freeClock > 1e6) {
@@ -275,16 +318,53 @@ void Renderer::render(float *out, int frames, const StepCallback &onStep, const 
             }
         }
     }
+    m_frame = 0;
 
-    for (Suppressed &s : m_suppressed)
-        s.framesLeft -= frames;
-    m_suppressed.removeIf([](const Suppressed &s) { return s.framesLeft <= 0; });
+    // Then the plugins, a pad at a time: its synth, its effects, and into
+    // the mix. A muted pad still runs, so its echoes are where they should
+    // be when it comes back.
+    float *masterLeft = m_masterBuffer.data(), *masterRight = m_masterBuffer.data() + kMaxBlock;
+    for (int p = 0; p < kPads; ++p) {
+        float *left = padChannel(p, 0), *right = padChannel(p, 1);
+        if (isSynth(p)) {
+            if (m_heldKey[p] >= 0 && m_releaseAt[p] < frames)
+                noteOff(p, int(m_releaseAt[p]));
+            m_releaseAt[p] -= frames;
+            auto &notes = m_notes[p];
+            std::stable_sort(notes.begin(), notes.end(), [](const NoteEvent &a, const NoteEvent &b) { return a.frame < b.frame; });
+            if (m_rack.synths[p])
+                m_rack.synths[p]->process(left, right, frames, notes.constData(), int(notes.size()), transport);
+            notes.clear();
+        }
+        for (const RackSlot &effect : std::as_const(m_rack.effects[p]))
+            if (!effect.bypass)
+                effect.processor->process(left, right, frames, nullptr, 0, transport);
+        if (gains[p] > 0)
+            for (int i = 0; i < frames; ++i) {
+                masterLeft[i] += left[i] * gains[p];
+                masterRight[i] += right[i] * gains[p];
+            }
+    }
+    for (const RackSlot &effect : std::as_const(m_rack.master))
+        if (!effect.bypass)
+            effect.processor->process(masterLeft, masterRight, frames, nullptr, 0, transport);
+
+    for (int i = 0; i < frames; ++i) {
+        // A soft limit, so a busy bar thickens rather than clips, with room
+        // left for the grit's drive.
+        float left = std::tanh(masterLeft[i] * 0.7f);
+        float right = std::tanh(masterRight[i] * 0.7f);
+        master(&left, &right);
+        out[2 * i] = left;
+        out[2 * i + 1] = right;
+    }
 }
 
-QVector<float> renderSong(const Song &song, const std::array<SampleBuffer, kPads> &sounds, int pattern) {
+QVector<float> renderSong(const Song &song, const std::array<SampleBuffer, kPads> &sounds, const Rack &rack, int pattern) {
     Renderer renderer;
     renderer.setSong(song);
     renderer.setSounds(sounds);
+    renderer.setRack(rack);
     const int bars = song.chain.isEmpty() ? 1 : int(song.chain.size());
     renderer.play(!song.chain.isEmpty(), pattern, 0);
     renderer.stopAfterBars(bars);
@@ -296,10 +376,15 @@ QVector<float> renderSong(const Song &song, const std::array<SampleBuffer, kPads
         renderer.render(buffer, block);
         out.append(QList<float>(buffer, buffer + block * 2));
     }
-    // Let the last sounds ring out, up to four seconds.
-    for (int tail = 0; tail < 4 * kRate && renderer.sounding(); tail += block) {
+    // Let the last sounds ring out, echoes and all, up to eight seconds.
+    for (int tail = 0; tail < 8 * kRate; tail += block) {
         renderer.render(buffer, block);
         out.append(QList<float>(buffer, buffer + block * 2));
+        float loudest = 0;
+        for (float sample : buffer)
+            loudest = std::max(loudest, std::abs(sample));
+        if (!renderer.sounding() && loudest < 1e-4f)
+            break;
     }
     // Then trim the silence, but never into the music.
     const qsizetype musical = qsizetype(std::ceil(bars * kSteps * renderer.stepFrames())) * 2;

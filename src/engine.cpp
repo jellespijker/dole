@@ -174,3 +174,15 @@ void AudioEngine::preview(const SampleBuffer &sound, double rate) {
     QMutexLocker lock(&m_shared->mutex);
     m_shared->renderer.preview(sound, rate);
 }
+
+void AudioEngine::setRack(const Rack &rack) {
+    // The plugins the old rack held go when the caller lets go of them, here
+    // on the main thread, not on the audio thread.
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.setRack(rack);
+}
+
+void AudioEngine::locked(const std::function<void()> &work) {
+    QMutexLocker lock(&m_shared->mutex);
+    work();
+}

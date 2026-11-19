@@ -27,6 +27,10 @@ public:
     virtual void setRepeat(int division) = 0;
     virtual void suppress(int pad, int pattern, int step) = 0;
     virtual void preview(const SampleBuffer &sound, double rate) = 0;
+    virtual void setRack(const Rack &rack) = 0;
+    // Runs work while the audio is held off, for changing a plugin the
+    // audio thread is playing.
+    virtual void locked(const std::function<void()> &work) = 0;
 
 signals:
     void positionChanged(int chainIndex, int pattern, int step);
@@ -56,6 +60,8 @@ public:
     void setRepeat(int division) override;
     void suppress(int pad, int pattern, int step) override;
     void preview(const SampleBuffer &sound, double rate) override;
+    void setRack(const Rack &rack) override;
+    void locked(const std::function<void()> &work) override;
     // Opens the output ahead of the first Space, which would otherwise wait
     // most of a second for it. It opens on the audio thread, so the window
     // never waits.

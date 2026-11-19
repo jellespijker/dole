@@ -2,8 +2,8 @@
 name: dole
 description: |
   Make beats with dole, an MPC-style sampler and sequencer whose songs are
-  .dole JSON files: sixteen pads (a boom-bap kit, samples, or chops of a
-  sample), one-bar patterns, and a song chain. Use for ANY request to write,
+  .dole JSON files: sixteen pads (a boom-bap kit, samples, chops, or CLAP and
+  LV2 synths), effect chains, one-bar patterns, and a song chain. Use for ANY request to write,
   change, check, or render a beat, drum pattern, loop, chop, or .dole file, or
   to turn one into a WAV.
 ---
@@ -26,6 +26,9 @@ on each pad, for this version of dole.
 2. Edit the JSON. Rows are 16 characters (`X.....x...x.....`). Samples go
    beside the song and are named relative to it; a pad plays a chop of one
    with `start` and `end` in seconds, and `tune` pitches it.
+   Pads and the master take plugins: `synth` on a pad, `effects` on a pad,
+   `master` for the mix. `dole plugins` lists what's installed; dole's own
+   (overdrive, bitcrush, ringmod, comb, delay, stutter) are always there.
 3. Check: `dole check beat.dole --json` reports every problem, and the
    tempo, patterns, and length.
 4. Listen: `dole render beat.dole -o beat.wav` renders the song;

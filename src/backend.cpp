@@ -7,7 +7,14 @@
 #include <QStandardPaths>
 #include <QtConcurrentRun>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <cmath>
+
 #include "chop.h"
+#include "rack.h"
 #include "renderer.h"
 #include "wav.h"
 
@@ -33,6 +40,21 @@ QString withSuffix(QString path, const QString &suffix) {
     if (QFileInfo(path).suffix().compare(suffix, Qt::CaseInsensitive) != 0)
         path += "." + suffix;
     return path;
+}
+
+// The pads as the pad list shows them: everything but plugin settings,
+// which change with every slider move and would rebuild the whole grid.
+std::array<Pad, kPads> outlines(const std::array<Pad, kPads> &pads) {
+    std::array<Pad, kPads> result = pads;
+    for (Pad &pad : result) {
+        pad.synth.params.clear();
+        pad.synth.state.clear();
+        for (PluginSlot &effect : pad.effects) {
+            effect.params.clear();
+            effect.state.clear();
+        }
+    }
+    return result;
 }
 
 QString sliceKey(const Pad &pad) {
@@ -122,7 +144,10 @@ QVariantList Backend::pads() const {
                             {"group", pad.group},
                             {"mute", pad.mute},
                             {"solo", pad.solo},
-                            {"audible", m_song.audible(p)}};
+                            {"audible", m_song.audible(p)},
+                            {"synth", pad.synth.isEmpty() ? QString() : pluginName(pad.synth.id)},
+                            {"length", pad.length},
+                            {"effects", pad.effects.size()}};
     }
     return list;
 }
@@ -165,16 +190,316 @@ void Backend::apply(const Song &next, const QString &coalesce) {
     }
     m_coalesce = coalesce;
     m_redo.clear();
+    // Only what changed is announced: a slider on a plugin moves often, and
+    // rebuilding the grid and the pads for it would make it stutter.
+    const bool grid = next.patterns != m_song.patterns;
+    const bool pads = outlines(next.pads) != outlines(m_song.pads) || next.master.size() != m_song.master.size();
     m_song = next;
-    sync();
+    m_engine->setSong(m_song);
+    syncSounds();
+    syncRack();
+    emit songChanged();
+    if (grid)
+        emit gridChanged();
+    if (pads) {
+        emit padsChanged();
+        emit rackChanged();
+    }
 }
 
 void Backend::sync() {
     m_engine->setSong(m_song);
     syncSounds();
+    syncRack();
     emit songChanged();
     emit gridChanged();
     emit padsChanged();
+    emit rackChanged();
+}
+
+QString Backend::slotKey(int target, int index) {
+    return target < 0 ? QString("m%1").arg(index) : index < 0 ? QString("s%1").arg(target) : QString("e%1.%2").arg(target).arg(index);
+}
+
+QString Backend::pluginName(const QString &id) const {
+    for (const PluginInfo &info : m_plugins)
+        if (info.id == id)
+            return info.name;
+    for (const Live &live : m_live)
+        if (live.applied.id == id && live.processor)
+            return live.processor->name();
+    return id.section(':', 1).section('/', -1).section('#', -1).isEmpty() ? id
+                                                                         : id.section(':', 1).section('/', -1).section('#', -1);
+}
+
+QVector<PluginSlot> &Backend::chainOf(Song &song, int target) const {
+    return target < 0 ? song.master : song.pads[target].effects;
+}
+
+PluginSlot *Backend::slotAt(Song &song, int target, int index) const {
+    if (target >= kPads || target < -1)
+        return nullptr;
+    if (index < 0)
+        return target >= 0 && !song.pads[target].synth.isEmpty() ? &song.pads[target].synth : nullptr;
+    QVector<PluginSlot> &chain = chainOf(song, target);
+    return index < chain.size() ? &chain[index] : nullptr;
+}
+
+// Keeps the plugins playing in step with the song: one made for each slot,
+// settings passed on as they change, and the ones no longer used let go.
+void Backend::syncRack() {
+    Rack rack;
+    QSet<QString> used;
+    auto use = [&](const QString &key, const PluginSlot &slot) -> std::shared_ptr<Processor> {
+        used << key;
+        Live &live = m_live[key];
+        if (live.applied.id != slot.id) {
+            live = Live{slot, nullptr, {}};
+            QString error;
+            live.processor = createProcessor(slot, &error);
+            if (!live.processor) {
+                live.error = error;
+                setMessage("pluginFailed", pluginName(slot.id), error);
+            } else {
+                live.processor->onEdited = [this, key] { pullPlugin(key); };
+            }
+            return live.processor;
+        }
+        if (live.processor && live.applied != slot) {
+            const PluginSlot old = live.applied;
+            std::shared_ptr<Processor> processor = live.processor;
+            m_engine->locked([&] {
+                if (slot.state != old.state && !slot.state.isEmpty())
+                    processor->loadState(slot.state);
+                // A parameter no longer set (undone) goes back to its default.
+                for (const Parameter &p : processor->parameters())
+                    if (old.params.contains(p.id) && !slot.params.contains(p.id))
+                        processor->setParameter(p.id, p.defaultValue);
+                for (auto it = slot.params.begin(); it != slot.params.end(); ++it)
+                    if (old.params.value(it.key(), std::nan("")) != it.value())
+                        processor->setParameter(it.key(), it.value());
+            });
+        }
+        live.applied = slot;
+        return live.processor;
+    };
+    for (int p = 0; p < kPads; ++p) {
+        const Pad &pad = m_song.pads[p];
+        if (!pad.synth.isEmpty())
+            rack.synths[p] = use(slotKey(p, -1), pad.synth);
+        for (int i = 0; i < pad.effects.size(); ++i)
+            if (auto processor = use(slotKey(p, i), pad.effects[i]))
+                rack.effects[p] << RackSlot{processor, pad.effects[i].bypass};
+    }
+    for (int i = 0; i < m_song.master.size(); ++i)
+        if (auto processor = use(slotKey(-1, i), m_song.master[i]))
+            rack.master << RackSlot{processor, m_song.master[i].bypass};
+    m_engine->setRack(rack);
+    // Let go of the rest only now that the audio thread has, on this thread.
+    for (auto it = m_live.begin(); it != m_live.end();)
+        it = used.contains(it.key()) ? std::next(it) : m_live.erase(it);
+}
+
+void Backend::pullPlugin(const QString &key) {
+    const auto it = m_live.constFind(key);
+    if (it == m_live.constEnd() || !it->processor)
+        return;
+    Song next = m_song;
+    PluginSlot *slot = nullptr;
+    if (key.startsWith('s'))
+        slot = &next.pads[key.mid(1).toInt()].synth;
+    else if (key.startsWith('m'))
+        slot = &next.master[key.mid(1).toInt()];
+    else
+        slot = &next.pads[key.mid(1).section('.', 0, 0).toInt()].effects[key.section('.', 1).toInt()];
+    slot->state = it->processor->saveState();
+    // The sliders' values follow what the window set.
+    for (const Parameter &p : it->processor->parameters())
+        if (slot->params.contains(p.id))
+            slot->params[p.id] = p.value;
+    m_live[key].applied = *slot;
+    apply(next, "editor " + key);
+}
+
+void Backend::pullPlugins() {
+    for (const QString &key : m_live.keys())
+        pullPlugin(key);
+}
+
+QVariantList Backend::plugins() const {
+    QVariantList list;
+    for (const PluginInfo &info : m_plugins)
+        list << QVariantMap{{"id", info.id}, {"name", info.name}, {"vendor", info.vendor},
+                            {"format", info.format}, {"instrument", info.instrument}};
+    return list;
+}
+
+QVariantMap Backend::rack() const {
+    auto describe = [this](const QString &key, const PluginSlot &slot) {
+        const Live live = m_live.value(key);
+        QVariantList params;
+        if (live.processor)
+            for (const Parameter &p : live.processor->parameters()) {
+                const double value = slot.params.value(p.id, p.value);
+                params << QVariantMap{{"id", p.id},           {"name", p.name},           {"value", value},
+                                      {"min", p.min},         {"max", p.max},             {"default", p.defaultValue},
+                                      {"stepped", p.stepped}, {"log", p.logarithmic},
+                                      {"text", live.processor->valueText(p.id, value)}};
+            }
+        return QVariantMap{{"id", slot.id},
+                           {"name", pluginName(slot.id)},
+                           {"format", slot.id.contains(':') ? slot.id.section(':', 0, 0) : QString("dole")},
+                           {"bypass", slot.bypass},
+                           {"editor", live.processor && live.processor->hasEditor()},
+                           {"error", live.error},
+                           {"params", params}};
+    };
+    QVariantMap map{{"target", m_rackTarget}};
+    QVariantList effects;
+    const QVector<PluginSlot> &chain = m_rackTarget < 0 ? m_song.master : m_song.pads[m_rackTarget].effects;
+    for (int i = 0; i < chain.size(); ++i)
+        effects << describe(slotKey(m_rackTarget, i), chain[i]);
+    map.insert("effects", effects);
+    if (m_rackTarget >= 0) {
+        const Pad &pad = m_song.pads[m_rackTarget];
+        map.insert("synth", pad.synth.isEmpty() ? QVariant() : QVariant(describe(slotKey(m_rackTarget, -1), pad.synth)));
+        map.insert("length", pad.length);
+    }
+    return map;
+}
+
+void Backend::setRackTarget(int target) {
+    m_rackTarget = qBound(-1, target, kPads - 1);
+    emit rackChanged();
+}
+
+void Backend::setScanCommand(const QString &program, const QStringList &arguments) {
+    m_scanProgram = program;
+    m_scanArguments = arguments;
+}
+
+void Backend::scanPlugins() {
+    if (m_scanning || m_scanned || m_scanProgram.isEmpty())
+        return;
+    m_scanning = true;
+    emit pluginsChanged();
+    // Loading a plugin runs its code; a broken one can crash, so the scan
+    // runs in a process of its own and only it goes down.
+    auto *scan = new QProcess(this);
+    connect(scan, &QProcess::finished, this, [this, scan](int code, QProcess::ExitStatus status) {
+        scan->deleteLater();
+        m_scanning = false;
+        m_scanned = true;
+        const QJsonArray found = QJsonDocument::fromJson(scan->readAllStandardOutput()).object().value("plugins").toArray();
+        if (status != QProcess::NormalExit || code != 0 || found.isEmpty()) {
+            setMessage("scanFailed", {}, QString::fromUtf8(scan->readAllStandardError()).trimmed().section('\n', -1));
+        } else {
+            m_plugins.clear();
+            for (const QJsonValue &value : found) {
+                const QJsonObject o = value.toObject();
+                m_plugins << PluginInfo{o.value("id").toString(), o.value("name").toString(), o.value("vendor").toString(),
+                                        o.value("format").toString(), o.value("instrument").toBool()};
+            }
+        }
+        emit pluginsChanged();
+        emit padsChanged();
+        emit rackChanged();
+    });
+    connect(scan, &QProcess::errorOccurred, this, [this, scan](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;
+        scan->deleteLater();
+        m_scanning = false;
+        setMessage("scanFailed", {}, scan->errorString());
+        emit pluginsChanged();
+    });
+    scan->start(m_scanProgram, m_scanArguments);
+}
+
+void Backend::addEffect(int target, const QString &id) {
+    if (target < -1 || target >= kPads || id.isEmpty())
+        return;
+    Song next = m_song;
+    QVector<PluginSlot> &chain = chainOf(next, target);
+    if (chain.size() >= kMaxEffects) {
+        setMessage("chainFull", QString::number(kMaxEffects));
+        return;
+    }
+    chain << PluginSlot{id, {}, {}, false};
+    apply(next);
+}
+
+void Backend::removeEffect(int target, int index) {
+    if (target < -1 || target >= kPads)
+        return;
+    Song next = m_song;
+    if (index < 0) {
+        if (target >= 0)
+            next.pads[target].synth = PluginSlot{};
+    } else {
+        QVector<PluginSlot> &chain = chainOf(next, target);
+        if (index >= chain.size())
+            return;
+        chain.removeAt(index);
+    }
+    apply(next);
+}
+
+void Backend::moveEffect(int target, int index, int delta) {
+    if (target < -1 || target >= kPads)
+        return;
+    Song next = m_song;
+    QVector<PluginSlot> &chain = chainOf(next, target);
+    const int to = index + delta;
+    if (index < 0 || index >= chain.size() || to < 0 || to >= chain.size())
+        return;
+    chain.move(index, to);
+    apply(next);
+}
+
+void Backend::toggleBypass(int target, int index) {
+    Song next = m_song;
+    if (PluginSlot *slot = slotAt(next, target, index)) {
+        slot->bypass = !slot->bypass;
+        apply(next);
+    }
+}
+
+void Backend::setSynth(int pad, const QString &id) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].synth = id.isEmpty() ? PluginSlot{} : PluginSlot{id, {}, {}, false};
+    apply(next);
+}
+
+void Backend::cycleLength(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    const int *at = std::find(std::begin(kLengths), std::end(kLengths), next.pads[pad].length);
+    next.pads[pad].length = at + 1 < std::end(kLengths) ? *(at + 1) : kLengths[0];
+    apply(next);
+}
+
+QString Backend::setParameter(int target, int index, const QString &id, double value) {
+    Song next = m_song;
+    PluginSlot *slot = slotAt(next, target, index);
+    if (!slot)
+        return {};
+    slot->params[id] = value;
+    apply(next, QString("param %1 %2").arg(slotKey(target, index), id));
+    const Live live = m_live.value(slotKey(target, index));
+    return live.processor ? live.processor->valueText(id, value) : QString::number(value);
+}
+
+void Backend::openEditor(int target, int index) {
+    const Live live = m_live.value(slotKey(target, index));
+    if (!live.processor)
+        return;
+    QString error;
+    if (!live.processor->showEditor(&error))
+        setMessage("editorFailed", live.processor->name(), error);
 }
 
 SampleBuffer Backend::padSound(const Pad &pad) const {
@@ -679,6 +1004,7 @@ void Backend::saveAs() {
 }
 
 bool Backend::saveTo(const QString &path) {
+    pullPlugins();
     QString error;
     if (!saveSong(path, m_song, &error)) {
         setMessage("saveFailed", QFileInfo(path).fileName(), error);
@@ -722,12 +1048,19 @@ void Backend::exportTo(const QString &path) {
             setMessage("exportFailed", QFileInfo(path).fileName(), error);
         }
     });
+    // The export plays through plugins of its own, made here, from the
+    // song's settings, so the ones playing live carry on undisturbed. They
+    // are let go here too, when the export is done.
+    pullPlugins();
+    QStringList problems;
+    auto rack = std::make_shared<Rack>(buildRack(m_song, &problems));
+    connect(watcher, &QFutureWatcherBase::finished, this, [rack] {});
     // The export finishes even if the window closes first: the locker keeps
     // the app running, windowless, until the file is written.
     auto locker = std::make_shared<QEventLoopLocker>();
-    watcher->setFuture(QtConcurrent::run([song = m_song, sounds = sounds(), pattern = m_editPattern, path, locker] {
+    watcher->setFuture(QtConcurrent::run([song = m_song, sounds = sounds(), rack = rack.get(), pattern = m_editPattern, path, locker] {
         QString error;
-        writeWav(path, renderSong(song, sounds, pattern), &error);
+        writeWav(path, renderSong(song, sounds, *rack, pattern), &error);
         return error;
     }));
 }

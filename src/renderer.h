@@ -4,6 +4,7 @@
 #include <functional>
 
 #include "dsp.h"
+#include "rack.h"
 #include "song.h"
 #include "sounds.h"
 
@@ -30,6 +31,9 @@ public:
     void setSong(const Song &song);
     // A sound for each pad, already sliced; an empty one plays nothing.
     void setSounds(const std::array<SampleBuffer, kPads> &sounds);
+    // The plugins: a synth on a pad takes the place of its sound, and the
+    // effects follow, on the pad and then on the master.
+    void setRack(const Rack &rack) { m_rack = rack; }
 
     // Starts at the top of a bar: the song from one of its slots, or one
     // pattern looping.
@@ -77,8 +81,11 @@ private:
         double framesLeft;
     };
 
+    void renderBlock(float *out, int frames, const StepCallback &onStep, const RepeatCallback &onRepeat);
     void fire(int step);
     void trigger(int pad, float gain);
+    bool isSynth(int pad) const { return !m_song.pads[pad].synth.isEmpty(); }
+    void noteOff(int pad, int frame);
     void cut(Voice &voice);
     void advanceBar();
     double triggerTime(int step) const;
@@ -88,6 +95,17 @@ private:
 
     Song m_song;
     std::array<SampleBuffer, kPads> m_sounds{};
+    Rack m_rack;
+    // Each pad's sound for the block, kept apart until its effects have run.
+    std::vector<float> m_padBuffers = std::vector<float>(kPads * 2 * kMaxBlock);
+    std::vector<float> m_masterBuffer = std::vector<float>(2 * kMaxBlock);
+    float *padChannel(int pad, int channel) { return m_padBuffers.data() + (pad * 2 + channel) * kMaxBlock; }
+    // Notes for the synth pads in this block, the key each is holding, and
+    // when it lets go (in frames from the start of the block).
+    std::array<QVector<NoteEvent>, kPads> m_notes;
+    std::array<int, kPads> m_heldKey;
+    std::array<double, kPads> m_releaseAt;
+    int m_frame = 0; // the frame of the block being rendered; 0 between blocks
     // Two voices a pad: the one playing, and the one fading out under it.
     std::array<std::array<Voice, 2>, kPads> m_voices{};
     Voice m_preview;
@@ -118,6 +136,7 @@ private:
     float m_crackleDecay = 0;
 };
 
-// The whole song once (or, with no song, the given pattern once), with the
-// last sounds left to ring out, as interleaved stereo.
-QVector<float> renderSong(const Song &song, const std::array<SampleBuffer, kPads> &sounds, int pattern);
+// The whole song once (or, with no song, the given pattern once), through
+// its plugins, with the last sounds left to ring out, as interleaved stereo.
+QVector<float> renderSong(const Song &song, const std::array<SampleBuffer, kPads> &sounds, const Rack &rack,
+                          int pattern);

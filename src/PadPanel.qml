@@ -10,6 +10,7 @@ ColumnLayout {
     id: panel
 
     signal chopRequested()
+    signal effectsRequested()
 
     spacing: 12
 
@@ -66,6 +67,17 @@ ColumnLayout {
                     font.pixelSize: 10
                     color: theme.colors.muted
                 }
+                // The pad runs through effects, or plays a synth.
+                Label {
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 7
+                    visible: pad.info.effects > 0 || pad.info.synth !== ""
+                    text: (pad.info.synth !== "" ? "♪" : "") + (pad.info.effects > 0 ? "FX" : "")
+                    font.pixelSize: 9
+                    font.bold: true
+                    color: theme.accent
+                }
                 Label {
                     anchors.left: parent.left
                     anchors.right: parent.right
@@ -120,7 +132,8 @@ ColumnLayout {
                 elide: Text.ElideRight
             }
             Label {
-                text: panel.selected.state === "kit" ? qsTr("Kit")
+                text: panel.selected.synth !== "" ? qsTr("Synth")
+                      : panel.selected.state === "kit" ? qsTr("Kit")
                       : panel.selected.state === "loading" ? qsTr("Loading…")
                       : panel.selected.state === "failed" ? qsTr("Can't load")
                       : panel.selected.chop ? qsTr("Chop") : qsTr("Sample")
@@ -189,6 +202,13 @@ ColumnLayout {
                 onClicked: backend.resetPad(backend.selectedPad)
             }
             Chip { text: qsTr("Chop…"); bold: false; onClicked: panel.chopRequested() }
+            Chip {
+                objectName: "padEffects"
+                text: panel.selected.effects > 0 ? qsTr("Effects (%1)").arg(panel.selected.effects) : qsTr("Effects…")
+                on: panel.selected.effects > 0 || panel.selected.synth !== ""
+                bold: false
+                onClicked: panel.effectsRequested()
+            }
         }
     }
 }

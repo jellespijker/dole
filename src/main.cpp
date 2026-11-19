@@ -66,6 +66,8 @@ int main(int argc, char *argv[]) {
     AudioEngine audio;
     PortalFilePicker picker;
     Backend backend(&audio, &picker);
+    // Plugins are found by this same binary, in a process of its own.
+    backend.setScanCommand(QCoreApplication::applicationFilePath(), {"plugins", "--json"});
     const QString song = args.positionalArguments().value(1);
     if (!song.isEmpty())
         backend.openPath(QFileInfo(song).absoluteFilePath());

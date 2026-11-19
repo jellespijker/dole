@@ -12,6 +12,8 @@
 #include <QSaveFile>
 #include <cstdio>
 
+#include "plugin.h"
+#include "rack.h"
 #include "renderer.h"
 #include "song.h"
 #include "sounds.h"
@@ -111,7 +113,12 @@ int check(const QStringList &arguments) {
     Song song;
     std::array<SampleBuffer, kPads> sounds;
     QStringList problems;
-    const bool ok = load(command.argument(1), &song, &sounds, &problems);
+    bool ok = load(command.argument(1), &song, &sounds, &problems);
+    if (ok) {
+        // Every plugin the song names is made, to see that it can be.
+        buildRack(song, &problems);
+        ok = problems.isEmpty();
+    }
 
     QStringList used;
     for (int p = 0; p < kPatterns; ++p)
@@ -190,7 +197,13 @@ int render(const QStringList &arguments) {
         song.chain = QVector<int>(bars, pattern);
     }
 
-    const QVector<float> audio = renderSong(song, sounds, 0);
+    const Rack rack = buildRack(song, &problems);
+    if (!problems.isEmpty()) {
+        for (const QString &problem : problems)
+            print(stderr, problem);
+        return 1;
+    }
+    const QVector<float> audio = renderSong(song, sounds, rack, 0);
     QString error;
     if (!writeWav(output, audio, &error))
         return fail(output + ": " + error);
@@ -199,6 +212,26 @@ int render(const QStringList &arguments) {
         print({{"output", QFileInfo(output).absoluteFilePath()}, {"seconds", qRound(length * 10) / 10.0}});
     else
         print(stdout, QString("Wrote %1 (%2 s)").arg(output).arg(length, 0, 'f', 1));
+    return 0;
+}
+
+int plugins(const QStringList &arguments) {
+    Command command("plugins", "List the effects and synths dole can load: its own, CLAP, and LV2.", false);
+    command.json();
+    command.parser.process(arguments);
+    const QVector<PluginInfo> found = scanPlugins();
+    if (command.wantsJson()) {
+        QJsonArray list;
+        for (const PluginInfo &info : found)
+            list.append(QJsonObject{{"id", info.id}, {"name", info.name}, {"vendor", info.vendor},
+                                    {"format", info.format}, {"instrument", info.instrument}});
+        print({{"plugins", list}});
+    } else {
+        for (const PluginInfo &info : found)
+            print(stdout, QString("%1  %2%3  (%4)")
+                              .arg(info.instrument ? "synth " : "effect", info.name,
+                                   info.vendor.isEmpty() || info.vendor == "dole" ? QString() : ", " + info.vendor, info.id));
+    }
     return 0;
 }
 
@@ -262,12 +295,13 @@ QString cliSummary() {
            "  new <song>                    Start a song file\n"
            "  check <song>                  Report every problem, and summarize the song\n"
            "  render <song> -o <file.wav>   Render the song, or one pattern, to WAV\n"
+           "  plugins                       List the effects and synths to load\n"
            "  help format                   How a .dole song file is written\n"
            "  skill [install]               Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"new", "check", "render", "skill", "help"}.contains(word);
+    return QStringList{"new", "check", "render", "plugins", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -275,6 +309,7 @@ int runCli(const QStringList &arguments) {
     return command == "new"      ? create(arguments)
            : command == "check"  ? check(arguments)
            : command == "render" ? render(arguments)
+           : command == "plugins" ? plugins(arguments)
            : command == "skill"  ? skill(arguments)
                                  : help(arguments);
 }

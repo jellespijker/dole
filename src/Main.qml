@@ -21,7 +21,7 @@ ApplicationWindow {
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
-    readonly property bool idle: !help.opened && !confirm.opened && !chop.opened
+    readonly property bool idle: !help.opened && !confirm.opened && !chop.opened && !chain.opened
     property int cursorStep: 0
     property bool songFocus: false
     property int songCursor: 0
@@ -132,6 +132,8 @@ ApplicationWindow {
     Shortcut { sequence: "O"; enabled: win.idle; onActivated: backend.chooseSample(backend.selectedPad) }
     Shortcut { sequence: "Shift+O"; enabled: win.idle; onActivated: backend.resetPad(backend.selectedPad) }
     Shortcut { sequence: "K"; enabled: win.idle; onActivated: chop.open() }
+    Shortcut { sequence: "J"; enabled: win.idle; onActivated: chain.openFor(backend.selectedPad) }
+    Shortcut { sequence: "Shift+J"; enabled: win.idle; onActivated: chain.openFor(-1) }
 
     // Patterns.
     Shortcut { sequence: "Ctrl+C"; enabled: win.idle; onActivated: backend.copyPattern() }
@@ -159,7 +161,7 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Save]; enabled: win.idle; onActivated: backend.save() }
     Shortcut { sequences: ["Ctrl+Shift+S"]; enabled: win.idle; onActivated: backend.saveAs() }
     Shortcut { sequence: "Ctrl+E"; enabled: win.idle; onActivated: backend.exportAudio() }
-    Shortcut { sequence: "?"; enabled: !confirm.opened && !chop.opened; onActivated: help.opened ? help.close() : help.open() }
+    Shortcut { sequence: "?"; enabled: !confirm.opened && !chop.opened && !chain.opened; onActivated: help.opened ? help.close() : help.open() }
     Shortcut { sequences: ["Ctrl+Q"]; enabled: win.idle; onActivated: win.close() }
     Shortcut {
         sequence: "Escape"
@@ -321,6 +323,12 @@ ApplicationWindow {
                     bold: false
                     onClicked: backend.toggleVinyl()
                 }
+                Chip {
+                    objectName: "masterEffects"
+                    text: qsTr("Master FX")
+                    bold: false
+                    onClicked: chain.openFor(-1)
+                }
 
                 // What Space plays: the pattern being edited, or the song.
                 Row {
@@ -439,6 +447,7 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     Layout.alignment: Qt.AlignTop
                     onChopRequested: chop.open()
+                    onEffectsRequested: chain.openFor(backend.selectedPad)
                 }
             }
 
@@ -461,7 +470,8 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 readonly property string kind: backend.message.kind || ""
                 readonly property bool error: ["saveFailed", "openFailed", "sampleFailed", "noFfmpeg", "exportFailed",
-                                               "noDevice", "deviceFailed", "pickerFailed"].indexOf(kind) >= 0
+                                               "noDevice", "deviceFailed", "pickerFailed", "pluginFailed", "editorFailed",
+                                               "scanFailed", "chainFull"].indexOf(kind) >= 0
                 text: {
                     const m = backend.message
                     switch (kind) {
@@ -478,6 +488,10 @@ ApplicationWindow {
                     case "noDevice": return qsTr("There is no sound output to play through.")
                     case "deviceFailed": return qsTr("The sound output stopped working.")
                     case "pickerFailed": return qsTr("The file chooser didn't open: %1").arg(m.detail)
+                    case "pluginFailed": return qsTr("Couldn't load %1: %2").arg(m.arg).arg(m.detail)
+                    case "editorFailed": return qsTr("%1 couldn't open its window: %2").arg(m.arg).arg(m.detail)
+                    case "scanFailed": return qsTr("Looking for plugins failed: %1").arg(m.detail)
+                    case "chainFull": return qsTr("A chain holds %1 effects at most.").arg(m.arg)
                     }
                     return backend.recording ? qsTr("Recording: play the pads, they land on the nearest step")
                                              : qsTr("Play the pads with 1–4, Q–R, A–F, Z–V. Press ? for the shortcuts")
@@ -530,6 +544,7 @@ ApplicationWindow {
                     { keys: "U", action: qsTr("The pad's mute group") },
                     { keys: "O  Shift+O", action: qsTr("Load a sample onto the pad, or go back to the kit") },
                     { keys: "K", action: qsTr("Chop a sample onto the pads") },
+                    { keys: "J  Shift+J", action: qsTr("The pad's synth and effects, or the master's") },
                     { keys: "Ctrl+1 – 8  PgUp PgDn", action: qsTr("Edit pattern A to H") },
                     { keys: "Ctrl+C  Ctrl+V", action: qsTr("Copy and paste a pattern") },
                     { keys: "Ctrl+Delete", action: qsTr("Clear the pattern") },
@@ -561,6 +576,12 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    ChainView {
+        id: chain
+        objectName: "chain"
+        rightToLeft: win.rightToLeft
     }
 
     ChopView {

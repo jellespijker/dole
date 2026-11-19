@@ -2,6 +2,8 @@
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 set(ENV{QT_QPA_PLATFORM} "")
+set(ENV{CLAP_PATH} "${PLUGINS}/clap")
+set(ENV{LV2_PATH} "${PLUGINS}/lv2")
 
 function(run expected)
   execute_process(COMMAND ${DOLE} ${ARGN} WORKING_DIRECTORY "${WORK}"
@@ -51,5 +53,18 @@ run(0 help format)
 if(NOT out MATCHES "The .dole song format")
   message(FATAL_ERROR "help format:\n${out}")
 endif()
+run(0 plugins --json)
+if(NOT out MATCHES "clap:dole.test.sine" OR NOT out MATCHES "lv2:urn:dole:test-gain" OR NOT out MATCHES "\"overdrive\"")
+  message(FATAL_ERROR "plugins should list the test plugins:\n${out}")
+endif()
+
+file(WRITE "${WORK}/plugged.dole" "{\"dole\": 2, \"pads\": {\"1\": {\"effects\": [{\"plugin\": \"overdrive\"}, {\"plugin\": \"lv2:urn:dole:test-gain\"}]}, \"2\": {\"synth\": {\"plugin\": \"clap:dole.test.sine\"}}}, \"patterns\": {\"A\": {\"1\": \"x...............\", \"2\": \"....x...........\"}}}")
+run(0 render plugged.dole -o plugged.wav)
+file(WRITE "${WORK}/unplugged.dole" "{\"dole\": 2, \"master\": [{\"plugin\": \"clap:not.here\"}]}")
+run(1 check unplugged.dole)
+if(NOT err MATCHES "isn't installed")
+  message(FATAL_ERROR "check should say a plugin is missing:\n${err}")
+endif()
+
 run(0 skill)
 run(0 --version)

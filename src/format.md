@@ -51,6 +51,11 @@ A dole song is one JSON file. Every field but `"dole"` is optional.
   - `group`: a mute group, 1 to 4; a pad cuts off the others in its group.
     The hat and open hat are in group 1. 0 is none.
   - `mute`, `solo`: true or false.
+  - `synth`: a plugin that plays the pad instead of its sound (see Plugins).
+    The pad's steps play notes on it, middle C moved by `tune`.
+  - `length`: how many steps a synth pad's note is held: 1, 2, 4, 8, or 16.
+  - `effects`: up to four plugins the pad's sound runs through, in order.
+- `master`: up to four plugins the whole mix runs through, before the grit.
 - `patterns`: patterns `A` to `H`, each one bar of sixteen sixteenth notes,
   a row per pad, keyed like `pads`. Leave out a pattern or a pad to leave it
   empty. A row is 16 characters, one a step: `.` is silent, `x` a hit, `X` an
@@ -59,5 +64,28 @@ A dole song is one JSON file. Every field but `"dole"` is optional.
 - `song`: the patterns to play in order, one bar each. Empty, the song is
   pattern A once.
 
-`dole check song.dole` reports any problem; `dole render song.dole -o song.wav`
+## Plugins
+
+A plugin is `{"plugin": "<id>", "params": {"<id>": value}, "bypass": false}`,
+with `"state"` (base64) for plugins that keep their own. `dole plugins`
+lists every id on the machine. dole's own effects, which need nothing
+installed, and their parameters:
+
+- `overdrive`: `drive` 0–1, `fuzz` 0–1 (a hard, lopsided clip), `tone`
+  300–16000 Hz, `mix` 0–1.
+- `bitcrush`: `bits` 1–16, `rate` 300–48000 Hz, `mix` 0–1.
+- `ringmod`: `freq` 20–4000 Hz, `shape` 0 (sine) to 1 (square), `mix` 0–1.
+- `comb`: a metallic resonator; `freq` 30–3000 Hz, `feedback` 0–1, `damp`
+  0–1, `mix` 0–1.
+- `delay`: `time` 0.01–1.5 s, `feedback` 0–1.2 (past 1 it runs away into
+  noise, held in by saturation), `drive` 0–1, `tone` 300–16000 Hz, `mix` 0–1.
+- `stutter`: gates in time with the song; `rate` 0 (1/4) to 3 (1/32),
+  `duty` 0–1, `depth` 0–1.
+
+CLAP plugins are `clap:<plugin id>` (`clap:org.surge-synth-team.surge-xt`),
+their parameters numbered as the plugin numbers them; LV2 plugins are
+`lv2:<uri>`, their parameters named by port symbol.
+
+`dole check song.dole` reports any problem, including a plugin that isn't
+installed; `dole render song.dole -o song.wav`
 writes the song as a 48 kHz 16-bit stereo WAV, grit and vinyl included.

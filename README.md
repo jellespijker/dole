@@ -29,6 +29,17 @@ boom-bap: a lazy swing, a dusty kit, and an eerie loop.
 - **Grit.** G steps the master through Clean, 12-bit (an SP-1200's 26 kHz and
   12 bits), and Crushed. Shift+G adds vinyl crackle. Both are in the export.
 - **Swing** goes from straight to 75%. The demo loop sits at 58%.
+- **Plugins.** Any pad can play a CLAP or LV2 synth instead of a sample. Its
+  steps play notes, its tune sets the note, and a length holds it for up to a
+  bar. Every pad, and the master, has a chain of up to four effects. Those
+  can be plugins, or dole's own, made for noise: overdrive with a fuzz that
+  rectifies, a bitcrusher, a ring modulator, a metal comb resonator, a dirty
+  delay whose feedback runs past 100%, and a tempo-synced stutter. Press J
+  for the pad's chain (Shift+J for the master): every control is a slider,
+  and a CLAP plugin's own window opens beside dole through XWayland.
+  Plugins are found in `~/.clap`, `/usr/lib/clap`, `~/.lv2`, and
+  `/usr/lib/lv2`. `omarchy-pkg-add surge-xt-clap lsp-plugins-clap guitarix` is a
+  good start.
 
 Dole follows the Omarchy theme and language.
 
@@ -58,6 +69,7 @@ dole open [song.dole]
 | U | The pad's mute group |
 | O, Shift+O | Load a sample onto the pad, or go back to the kit |
 | K | Chop a sample onto the pads |
+| J, Shift+J | The pad's synth and effects, or the master's |
 | Ctrl+1 – 8, PgUp, PgDn | Edit pattern A to H (it takes over at the next bar) |
 | Ctrl+C, Ctrl+V | Copy and paste a pattern |
 | Ctrl+Delete | Clear the pattern |
@@ -103,12 +115,14 @@ each takes `--json` and exits 0 or 1:
 | `dole new song.dole` | Start a song from the demo loop (`--empty` for none) |
 | `dole check song.dole` | Report every problem, and the tempo, patterns, and length |
 | `dole render song.dole -o song.wav` | Render the song (`--pattern B --bars 4` for one pattern) |
+| `dole plugins` | List the synths and effects that can be loaded |
 | `dole skill install` | Install the agent skill for Claude Code and Codex |
 
 ## Building
 
-Dole uses Qt 6 (base, declarative, multimedia, svg, wayland) and `ffmpeg`, all
-of which come with Omarchy.
+Dole uses Qt 6 (base, declarative, multimedia, svg, wayland), `ffmpeg`,
+`lilv` for LV2, and `libxcb` for plugin windows, all of which come with
+Omarchy. The CLAP headers (MIT) are in `third_party/clap`.
 
 ```
 bin/build                                # build into build/
@@ -118,5 +132,6 @@ cmake --install build --prefix ~/.local  # add it to the app launcher
 
 ## License
 
-MIT. The theme, translator, file picker, command line, and dialog buttons
+MIT. The CLAP headers in `third_party/clap` are MIT, by Alexandre Bique and
+the CLAP authors. The theme, translator, file picker, command line, and dialog buttons
 follow Omacut, Hype, and the other Omarchy apps by David Heinemeier Hansson.

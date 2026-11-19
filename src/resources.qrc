@@ -8,6 +8,8 @@
         <file alias="PadPanel.qml">PadPanel.qml</file>
         <file alias="ChopView.qml">ChopView.qml</file>
         <file alias="Chip.qml">Chip.qml</file>
+        <file alias="ChainView.qml">ChainView.qml</file>
+        <file alias="PluginBrowser.qml">PluginBrowser.qml</file>
         <file alias="Names.js">Names.js</file>
         <file alias="dole.svg">../share/dole.svg</file>
         <file alias="skill.md">skill.md</file>

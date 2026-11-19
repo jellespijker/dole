@@ -46,6 +46,63 @@ int padIndex(const QString &key) {
     return kitIds().indexOf(key);
 }
 
+QJsonObject slotToJson(const PluginSlot &slot) {
+    QJsonObject object{{"plugin", slot.id}};
+    if (!slot.params.isEmpty()) {
+        QJsonObject params;
+        for (auto it = slot.params.begin(); it != slot.params.end(); ++it)
+            params.insert(it.key(), std::round(it.value() * 10000) / 10000);
+        object.insert("params", params);
+    }
+    if (!slot.state.isEmpty())
+        object.insert("state", QString::fromLatin1(slot.state.toBase64()));
+    if (slot.bypass)
+        object.insert("bypass", true);
+    return object;
+}
+
+bool slotFromJson(const QJsonValue &value, const QString &where, PluginSlot *slot, QString *error) {
+    const QJsonObject object = value.toObject();
+    slot->id = object.value("plugin").toString();
+    if (slot->id.isEmpty()) {
+        *error = where + "needs a \"plugin\".";
+        return false;
+    }
+    const QJsonObject params = object.value("params").toObject();
+    for (auto it = params.begin(); it != params.end(); ++it) {
+        if (!it.value().isDouble()) {
+            *error = where + QString("parameter \"%1\" should be a number.").arg(it.key());
+            return false;
+        }
+        slot->params.insert(it.key(), it.value().toDouble());
+    }
+    slot->state = QByteArray::fromBase64(object.value("state").toString().toLatin1());
+    slot->bypass = object.value("bypass").toBool();
+    return true;
+}
+
+QJsonArray chainToJson(const QVector<PluginSlot> &chain) {
+    QJsonArray array;
+    for (const PluginSlot &slot : chain)
+        array.append(slotToJson(slot));
+    return array;
+}
+
+bool chainFromJson(const QJsonValue &value, const QString &where, QVector<PluginSlot> *chain, QString *error) {
+    const QJsonArray array = value.toArray();
+    if (array.size() > kMaxEffects) {
+        *error = where + QString("has more than %1 effects.").arg(kMaxEffects);
+        return false;
+    }
+    for (int i = 0; i < array.size(); ++i) {
+        PluginSlot slot;
+        if (!slotFromJson(array[i], where + QString("effect %1: ").arg(i + 1), &slot, error))
+            return false;
+        *chain << slot;
+    }
+    return true;
+}
+
 double seconds(double value) {
     return std::round(value * 1000) / 1000;
 }
@@ -155,6 +212,12 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
             object.insert("mute", true);
         if (pad.solo)
             object.insert("solo", true);
+        if (!pad.synth.isEmpty())
+            object.insert("synth", slotToJson(pad.synth));
+        if (pad.length != 1)
+            object.insert("length", pad.length);
+        if (!pad.effects.isEmpty())
+            object.insert("effects", chainToJson(pad.effects));
         pads.insert(QString::number(p + 1), object);
     }
 
@@ -178,8 +241,11 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
     for (int p : song.chain)
         chain.append(patternName(p));
 
-    return {{"dole", 2},           {"bpm", song.bpm},     {"swing", song.swing}, {"grit", gritName(song.grit)},
-            {"vinyl", song.vinyl}, {"pads", pads},        {"patterns", patterns}, {"song", chain}};
+    QJsonObject json{{"dole", 2},           {"bpm", song.bpm},     {"swing", song.swing}, {"grit", gritName(song.grit)},
+                     {"vinyl", song.vinyl}, {"pads", pads},        {"patterns", patterns}, {"song", chain}};
+    if (!song.master.isEmpty())
+        json.insert("master", chainToJson(song.master));
+    return json;
 }
 
 bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *out, QString *error) {
@@ -232,6 +298,15 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
         pad.end = std::max(0.0, object.value("end").toDouble());
         if (pad.end > 0 && pad.end <= pad.start)
             return fail(QString("Pad %1: \"end\" should be after \"start\".").arg(p + 1));
+        const QString where = QString("Pad %1: ").arg(p + 1);
+        QString problem;
+        if (object.contains("synth") && !slotFromJson(object.value("synth"), where + "synth: ", &pad.synth, &problem))
+            return fail(problem);
+        pad.length = object.value("length").toInt(1);
+        if (std::find(std::begin(kLengths), std::end(kLengths), pad.length) == std::end(kLengths))
+            return fail(where + "\"length\" is 1, 2, 4, 8, or 16 steps.");
+        if (!chainFromJson(object.value("effects"), where, &pad.effects, &problem))
+            return fail(problem);
     }
 
     const QJsonObject patterns = json.value("patterns").toObject();
@@ -265,6 +340,10 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
             return fail(QString("The song is longer than %1 patterns.").arg(kMaxChain));
         song.chain << p;
     }
+
+    QString problem;
+    if (!chainFromJson(json.value("master"), "Master: ", &song.master, &problem))
+        return fail(problem);
 
     *out = song;
     return true;
