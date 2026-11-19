@@ -52,6 +52,8 @@ Popup {
         browser.open()
     }
 
+    onSelectedChanged: find.text = ""
+
     onEffectsChanged: if (selected >= effects.length && selected >= 0) selected = Math.max(isPad && rack.synth ? -1 : 0, effects.length - 1)
 
     ColumnLayout {
@@ -192,6 +194,24 @@ Popup {
                     wrapMode: Text.Wrap
                 }
 
+                // A big synth has hundreds of controls; find one by name.
+                TextField {
+                    id: find
+                    objectName: "findControl"
+                    Layout.fillWidth: true
+                    visible: !!view.current && view.current.params.length > 12
+                    placeholderText: qsTr("Find a control")
+                    Material.roundedScale: theme.radius
+                    Keys.onEscapePressed: (event) => {
+                        if (text !== "") {
+                            text = ""
+                            event.accepted = true
+                        } else {
+                            event.accepted = false
+                        }
+                    }
+                }
+
                 ListView {
                     id: params
                     objectName: "params"
@@ -199,7 +219,11 @@ Popup {
                     Layout.fillHeight: true
                     clip: true
                     spacing: 2
-                    model: view.current ? view.current.params : []
+                    model: {
+                        const all = view.current ? view.current.params : []
+                        const wanted = find.visible ? find.text.trim().toLowerCase() : ""
+                        return wanted === "" ? all : all.filter(p => p.name.toLowerCase().indexOf(wanted) >= 0)
+                    }
                     ScrollBar.vertical: ScrollBar {}
 
                     delegate: RowLayout {

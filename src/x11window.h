@@ -8,7 +8,8 @@ class QSocketNotifier;
 
 // A plain X11 window for a plugin to draw its editor into. Plugins on Linux
 // draw with X11, which on a Wayland desktop runs through XWayland, beside
-// dole's own Wayland window. It asks to float, as a fixed-size dialog.
+// dole's own Wayland window. It asks to float, as a fixed-size dialog, and
+// first shows in the middle of dole's monitor.
 class X11Window : public QObject {
     Q_OBJECT
 
@@ -33,5 +34,9 @@ private:
     void *m_connection = nullptr; // xcb_connection_t
     unsigned int m_window = 0;
     unsigned int m_deleteAtom = 0;
+    unsigned int m_root = 0;
+    int m_width = 0;
+    int m_height = 0;
+    bool m_placed = false;
     QSocketNotifier *m_notifier = nullptr;
 };

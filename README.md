@@ -36,7 +36,8 @@ boom-bap: a lazy swing, a dusty kit, and an eerie loop.
   rectifies, a bitcrusher, a ring modulator, a metal comb resonator, a dirty
   delay whose feedback runs past 100%, and a tempo-synced stutter. Press J
   for the pad's chain (Shift+J for the master): every control is a slider,
-  and a CLAP plugin's own window opens beside dole through XWayland.
+  with a search for synths that have hundreds, and a CLAP plugin's own
+  window opens over dole through XWayland.
   Plugins are found in `~/.clap`, `/usr/lib/clap`, `~/.lv2`, and
   `/usr/lib/lv2`. `omarchy-pkg-add surge-xt-clap lsp-plugins-clap guitarix` is a
   good start.
@@ -121,7 +122,7 @@ each takes `--json` and exits 0 or 1:
 ## Building
 
 Dole uses Qt 6 (base, declarative, multimedia, svg, wayland), `ffmpeg`,
-`lilv` for LV2, and `libxcb` for plugin windows, all of which come with
+`lilv` for LV2, and `libxcb` (with RandR) for plugin windows, all of which come with
 Omarchy. The CLAP headers (MIT) are in `third_party/clap`.
 
 ```

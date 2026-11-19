@@ -10,10 +10,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 DBus Multimedia Concurrent Test)
-# LV2 plugins load through lilv; CLAP plugin windows are X11, so xcb.
+# LV2 plugins load through lilv; CLAP plugin windows are X11, so xcb, and
+# RandR to find the monitor dole is on.
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LILV REQUIRED IMPORTED_TARGET lilv-0)
-pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)
+pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb xcb-randr)
 
 # Everything but main.cpp, shared by the app and the tests, so each source
 # compiles once and a new file in src/ needs no line here.

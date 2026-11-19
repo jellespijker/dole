@@ -359,8 +359,11 @@ private slots:
         for (const char *id : {"overdrive", "bitcrush", "ringmod", "comb", "delay", "stutter", "clap:dole.test.gain",
                                "clap:dole.test.sine", "lv2:urn:dole:test-gain"})
             QVERIFY2(ids.contains(id), id);
+        // Plugins installed on the machine show up too, so only dole's own
+        // and the test plugins are checked.
         for (const PluginInfo &info : found)
-            QCOMPARE(info.instrument, info.id == "clap:dole.test.sine");
+            if (!info.id.contains(':') || info.id.contains("dole"))
+                QCOMPARE(info.instrument, info.id == "clap:dole.test.sine");
     }
 
     void clapPluginsPlay() {
@@ -521,7 +524,11 @@ private slots:
         backend.scanPlugins();
         QVERIFY(backend.scanning());
         QTRY_VERIFY_WITH_TIMEOUT(!backend.scanning(), 10000);
-        QCOMPARE(backend.plugins().size(), 9);
+        QStringList ids;
+        for (const QVariant &plugin : backend.plugins())
+            ids << plugin.toMap().value("id").toString();
+        for (const char *id : {"overdrive", "clap:dole.test.gain", "clap:dole.test.sine", "lv2:urn:dole:test-gain"})
+            QVERIFY2(ids.contains(id), id);
     }
 
     // The song and its file.

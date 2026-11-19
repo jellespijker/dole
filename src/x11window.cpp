@@ -1,8 +1,13 @@
 #include "x11window.h"
 
+#include <QGuiApplication>
+#include <QScreen>
 #include <QSocketNotifier>
+#include <QWindow>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <xcb/randr.h>
 #include <xcb/xcb.h>
 
 namespace {
@@ -28,6 +33,46 @@ void setFixedSize(xcb_connection_t *connection, xcb_window_t window, int width, 
                         32, 18, hints);
 }
 
+// Where to put a new window: the middle of the monitor dole's window is on.
+// Dole's own window is a Wayland one, which doesn't know where it is, but it
+// knows its monitor's name, and XWayland names its monitors the same way.
+// The window manager takes the position an X window asks for, and a window
+// at 0, 0 lands in the corner of the first monitor, away from dole.
+QPoint centered(xcb_connection_t *connection, xcb_window_t root, int width, int height) {
+    const QWindow *window = QGuiApplication::focusWindow();
+    for (const QWindow *each : QGuiApplication::topLevelWindows())
+        if (!window && each->isVisible())
+            window = each;
+    const QScreen *screen = window ? window->screen() : QGuiApplication::primaryScreen();
+    const QString wanted = screen ? screen->name() : QString();
+
+    xcb_randr_get_monitors_reply_t *monitors =
+        xcb_randr_get_monitors_reply(connection, xcb_randr_get_monitors(connection, root, 1), nullptr);
+    if (!monitors)
+        return {};
+    QRect chosen;
+    for (auto it = xcb_randr_get_monitors_monitors_iterator(monitors); it.rem; xcb_randr_monitor_info_next(&it)) {
+        const QRect area(it.data->x, it.data->y, it.data->width, it.data->height);
+        xcb_get_atom_name_reply_t *name =
+            xcb_get_atom_name_reply(connection, xcb_get_atom_name(connection, it.data->name), nullptr);
+        const QString named = name ? QString::fromUtf8(xcb_get_atom_name_name(name),
+                                                       xcb_get_atom_name_name_length(name))
+                                   : QString();
+        free(name);
+        if (chosen.isNull() || it.data->primary)
+            chosen = area;
+        if (named == wanted) {
+            chosen = area;
+            break;
+        }
+    }
+    free(monitors);
+    if (chosen.isNull())
+        return {};
+    return {chosen.x() + std::max(0, (chosen.width() - width) / 2),
+            chosen.y() + std::max(0, (chosen.height() - height) / 2)};
+}
+
 } // namespace
 
 std::unique_ptr<X11Window> X11Window::create(const QString &title, int width, int height, QString *error) {
@@ -43,8 +88,11 @@ std::unique_ptr<X11Window> X11Window::create(const QString &title, int width, in
     }
     std::unique_ptr<X11Window> window(new X11Window);
     window->m_connection = connection;
+    window->m_width = width;
+    window->m_height = height;
     const xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
     window->m_window = xcb_generate_id(connection);
+    window->m_root = screen->root;
     const uint32_t values[] = {screen->black_pixel, XCB_EVENT_MASK_STRUCTURE_NOTIFY};
     xcb_create_window(connection, XCB_COPY_FROM_PARENT, window->m_window, screen->root, 0, 0, uint16_t(width),
                       uint16_t(height), 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
@@ -81,6 +129,8 @@ X11Window::~X11Window() {
 }
 
 void X11Window::resize(int width, int height) {
+    m_width = width;
+    m_height = height;
     auto *connection = static_cast<xcb_connection_t *>(m_connection);
     setFixedSize(connection, m_window, width, height);
     const uint32_t size[] = {uint32_t(width), uint32_t(height)};
@@ -89,7 +139,16 @@ void X11Window::resize(int width, int height) {
 }
 
 void X11Window::show() {
-    xcb_map_window(static_cast<xcb_connection_t *>(m_connection), m_window);
+    auto *connection = static_cast<xcb_connection_t *>(m_connection);
+    // Placed when it first shows, once the plugin has settled on its size;
+    // after that it stays wherever the user moved it.
+    if (!m_placed) {
+        m_placed = true;
+        const QPoint at = centered(connection, m_root, m_width, m_height);
+        const uint32_t position[] = {uint32_t(at.x()), uint32_t(at.y())};
+        xcb_configure_window(connection, m_window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, position);
+    }
+    xcb_map_window(connection, m_window);
     xcb_flush(static_cast<xcb_connection_t *>(m_connection));
 }
 
