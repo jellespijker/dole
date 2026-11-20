@@ -228,8 +228,13 @@ ColumnLayout {
                             }
                         }
 
+                        // A pad gives a little under the finger.
+                        scale: press.pressed && theme.motion ? 0.95 : 1
+                        Behavior on scale { NumberAnimation { duration: 70; easing.type: Easing.OutCubic } }
+
                         // Sounds on the press, not the release, and repeats while held.
                         TapHandler {
+                            id: press
                             gesturePolicy: TapHandler.WithinBounds
                             onPressedChanged: pressed ? backend.padDown(pad.number) : backend.padUp(pad.number)
                         }

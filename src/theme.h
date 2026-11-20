@@ -23,6 +23,9 @@ class Theme : public QObject {
     Q_PROPERTY(QVariantMap colors READ colors NOTIFY changed)
     Q_PROPERTY(bool light READ light NOTIFY changed)
     Q_PROPERTY(int radius READ radius NOTIFY changed)
+    // Whether Hyprland animates its windows; when the user has turned that
+    // off, dole keeps its own movement to what carries meaning.
+    Q_PROPERTY(bool motion READ motion NOTIFY changed)
     // The faces dole is set in: a condensed display face for names and
     // numbers, and a typewriter face for everything else.
     Q_PROPERTY(QString displayFont READ displayFont CONSTANT)
@@ -42,6 +45,7 @@ public:
     QVariantMap colors() const;
     bool light() const { return m_light; }
     int radius() const { return m_radius; }
+    bool motion() const { return m_motion; }
     QString displayFont() const { return m_displayFont; }
     QString typeFont() const { return m_typeFont; }
 
@@ -71,6 +75,8 @@ private:
     QString m_typeFont;
     bool m_roundingAgain = false;
     QProcess m_roundingProcess;
+    QProcess m_motionProcess;
+    bool m_motion = true;
     QTimer m_roundingTimeout;
     QLocalSocket m_events;
     QTimer m_reconnect;

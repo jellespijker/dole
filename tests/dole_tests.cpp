@@ -33,10 +33,17 @@ int lines(const QString &path) {
     return file.open(QIODevice::ReadOnly) ? file.readAll().count('\n') : 0;
 }
 
-// A hyprctl that answers with response.json beside it and counts its calls.
+// How many lines of a file mention a word.
+int mentions(const QString &path, const QByteArray &word) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll().count(word) : 0;
+}
+
+// A hyprctl that answers with response.json beside it and logs what it was
+// asked, a line a call.
 QString fakeHyprctl(const QString &directory) {
     const QString command = directory + "/hyprctl";
-    write(command, "#!/bin/bash\necho >> '" + directory.toUtf8() + "/calls'\ncat '" + directory.toUtf8()
+    write(command, "#!/bin/bash\necho \"$*\" >> '" + directory.toUtf8() + "/calls'\ncat '" + directory.toUtf8()
                        + "/response.json'\n");
     QFile::setPermissions(command, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
     return command;
@@ -1357,20 +1364,40 @@ private slots:
         Theme theme(dir.path(), nullptr, command, events.fullServerName());
         QTRY_VERIFY(events.hasPendingConnections());
         QLocalSocket *hyprland = events.nextPendingConnection();
-        QTRY_COMPARE(lines(hypr.filePath("calls")), 2);
+        QTRY_COMPARE(mentions(hypr.filePath("calls"), "rounding"), 2);
         QTRY_COMPARE(theme.radius(), 4);
 
         QVERIFY(write(hypr.filePath("response.json"), "{\"int\":10}"));
         QTest::qWait(300);
-        QCOMPARE(lines(hypr.filePath("calls")), 2);
+        QCOMPARE(mentions(hypr.filePath("calls"), "rounding"), 2);
         // Events arrive in pieces; only a whole configreloaded line counts.
         hyprland->write("activewindow>>kitty,~\nconfigrel");
         hyprland->flush();
         QTest::qWait(100);
-        QCOMPARE(lines(hypr.filePath("calls")), 2);
+        QCOMPARE(mentions(hypr.filePath("calls"), "rounding"), 2);
         hyprland->write("oaded>>\n");
         QTRY_COMPARE(theme.radius(), 10);
-        QCOMPARE(lines(hypr.filePath("calls")), 3);
+        QCOMPARE(mentions(hypr.filePath("calls"), "rounding"), 3);
+    }
+
+    void themeFollowsHyprlandsAnimations() {
+        QTemporaryDir dir, hypr;
+        const QString command = fakeHyprctl(hypr.path());
+        // The fake answers every question alike: 0 is no rounding, and no animations.
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":0}"));
+        QLocalServer events;
+        QVERIFY(events.listen(hypr.filePath("events.sock")));
+        Theme theme(dir.path(), nullptr, command, events.fullServerName());
+        QVERIFY(theme.motion());
+        QTRY_VERIFY(!theme.motion());
+        QVERIFY(mentions(hypr.filePath("calls"), "animations:enabled") >= 1);
+
+        QTRY_VERIFY(events.hasPendingConnections());
+        QLocalSocket *hyprland = events.nextPendingConnection();
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":1}"));
+        hyprland->write("configreloaded>>\n");
+        hyprland->flush();
+        QTRY_VERIFY(theme.motion());
     }
 
     void themeReachesHyprlandOnceItListens() {

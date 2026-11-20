@@ -17,6 +17,24 @@ Rectangle {
     border.width: 3
     border.color: ink
 
+    // A stamp put down while dole is open lands with a thud: it comes down
+    // from a little above the sheet. Ones already there when it opens just are.
+    property bool ready: false
+    Component.onCompleted: ready = true
+    onVisibleChanged: if (visible && ready) land.restart()
+    ParallelAnimation {
+        id: land
+        NumberAnimation { target: stamp; property: "opacity"; from: 0; to: 1; duration: 140; easing.type: Easing.OutCubic }
+        NumberAnimation {
+            target: stamp
+            property: "scale"
+            from: theme.motion ? 1.5 : 1
+            to: 1
+            duration: 160
+            easing.type: Easing.OutCubic
+        }
+    }
+
     Label {
         id: label
         anchors.centerIn: parent

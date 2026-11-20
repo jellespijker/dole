@@ -74,6 +74,20 @@ Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl, 
         if (m_roundingAgain) {
             m_roundingAgain = false;
             refreshRounding();
+            return;
+        }
+        // Then whether windows animate, asked in the same round.
+        m_motionProcess.start(m_hyprctl, {"-j", "getoption", "animations:enabled"});
+    });
+    connect(&m_motionProcess, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
+        const auto value = QJsonDocument::fromJson(m_motionProcess.readAllStandardOutput()).object().value("int");
+        if (code == 0 && status == QProcess::NormalExit && value.isDouble() && (value.toInt() != 0) != m_motion) {
+            m_motion = value.toInt() != 0;
+            emit changed();
+        }
+        if (m_roundingAgain) {
+            m_roundingAgain = false;
+            refreshRounding();
         }
     });
 
@@ -114,6 +128,11 @@ Theme::~Theme() {
     // Nothing reconnects or asks again while the members go.
     m_events.disconnect();
     m_roundingProcess.disconnect();
+    m_motionProcess.disconnect();
+    if (m_motionProcess.state() != QProcess::NotRunning) {
+        m_motionProcess.kill();
+        m_motionProcess.waitForFinished(1000);
+    }
     if (m_roundingProcess.state() != QProcess::NotRunning) {
         m_roundingProcess.kill();
         m_roundingProcess.waitForFinished(1000);
@@ -124,7 +143,7 @@ void Theme::refreshRounding() {
     if (m_hyprctl.isEmpty())
         return;
     // A query still running may have read the value from before the reload.
-    if (m_roundingProcess.state() != QProcess::NotRunning) {
+    if (m_roundingProcess.state() != QProcess::NotRunning || m_motionProcess.state() != QProcess::NotRunning) {
         m_roundingAgain = true;
         return;
     }

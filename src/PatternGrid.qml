@@ -27,6 +27,8 @@ Item {
     readonly property int viewStart: viewBar * 16
     readonly property int bars: Math.max(1, backend.patternLength / 16)
     readonly property bool playingHere: backend.playing && backend.playPattern === backend.editPattern
+    // How long a step lasts at the tempo, for the light bar's sweep.
+    readonly property real stepMs: 15000 / Math.max(1, backend.bpm)
     readonly property int headerWidth: width < 640 ? 150 : 158
     readonly property int stepsLeft: headerWidth + 8
     readonly property int rowSpacing: 5
@@ -308,6 +310,20 @@ Item {
                                                 border.width: level > 0 ? 0 : 1.5
                                                 border.color: grid.alpha(theme.foreground, 0.28)
 
+                                                // The toner fusing: as the light bar passes a hit, its
+                                                // ink spreads and fades, so a step that sounded shows it.
+                                                onPrintedChanged: if (printed && theme.motion) fuse.restart()
+                                                Rectangle {
+                                                    id: toner
+                                                    anchors.fill: parent
+                                                    color: theme.accent
+                                                    opacity: 0
+                                                    ParallelAnimation {
+                                                        id: fuse
+                                                        NumberAnimation { target: toner; property: "opacity"; from: 0.85; to: 0; duration: 200; easing.type: Easing.OutCubic }
+                                                        NumberAnimation { target: toner; property: "scale"; from: 1; to: 1.3; duration: 200; easing.type: Easing.OutCubic }
+                                                    }
+                                                }
                                                 // Each beat starts on a heavier rule.
                                                 Rectangle {
                                                     visible: cell.index % 4 === 0 && cell.level === 0
@@ -597,13 +613,30 @@ Item {
 
                 StepArea {
                     id: scan
+                    // How far the light has crossed the step being played.
+                    property real progress: 1
+                    readonly property int step: backend.playStep
+                    onStepChanged: if (theme.motion) sweep.restart()
+
+                    NumberAnimation {
+                        id: sweep
+                        target: scan
+                        property: "progress"
+                        from: 0
+                        to: 1
+                        // Time is even: the light crosses at a constant speed.
+                        duration: grid.stepMs
+                    }
+
                     Rectangle {
+                        id: band
                         x: scan.cellX(backend.playStep % 16) - 2
                         width: scan.cellWidth + 4
                         height: parent.height
                         color: grid.alpha(theme.foreground, 0.2)
                         Rectangle {
-                            anchors.right: parent.right
+                            objectName: "lightEdge"
+                            x: theme.motion ? (band.width - width) * scan.progress : band.width - width
                             width: 4
                             height: parent.height
                             color: theme.foreground
