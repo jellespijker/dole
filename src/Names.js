@@ -23,9 +23,10 @@ function kit(id) {
     return id
 }
 
-// What a pad plays: its synth, its sample, or its kit sound.
+// What a pad plays: its synth, its sample, or its kit sound; nothing yet,
+// past bank A.
 function pad(p) {
-    return p.synth ? p.synth : p.sample !== "" ? p.sample : kit(p.id)
+    return p.synth ? p.synth : p.sample !== "" ? p.sample : p.state === "empty" ? qsTr("Empty") : kit(p.id)
 }
 
 // The keys that play the pads, by pad: the bottom row is pad 1, as on an MPC.

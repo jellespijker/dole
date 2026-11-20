@@ -249,10 +249,10 @@ SampleBuffer horn() {
 SampleBuffer kitSound(int pad) {
     // Made once, the first time any is asked for; static initialization is
     // thread-safe, so a command and the audio thread may both ask.
-    static const std::array<SampleBuffer, kPads> sounds{
+    static const std::array<SampleBuffer, kBankPads> sounds{
         boom(), knock(), crack(), dusty(), rim(),  clap(), hat(0.03, 0.15), hat(0.25, 0.8),
         shaker(), tom(), crash(), clang(), stab(), bell(), bass(), horn()};
-    return pad >= 0 && pad < kPads ? sounds[pad] : SampleBuffer();
+    return pad >= 0 && pad < kBankPads ? sounds[pad] : SampleBuffer();
 }
 
 SampleBuffer decodeSample(const QString &path, QString *error) {

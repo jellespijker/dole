@@ -20,6 +20,7 @@ Rectangle {
     implicitWidth: Math.max(implicitHeight, label.implicitWidth + 22)
     implicitHeight: 32
     radius: Math.min(4, theme.radius)
+    opacity: enabled ? 1 : 0.4
     color: on ? onColor : tap.pressed ? alpha(theme.colors.selection, 1) : alpha(theme.colors.selection, 0.6)
     border.color: on ? onColor : theme.colors.selection
 

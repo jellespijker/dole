@@ -28,8 +28,27 @@ bool validPad(int pad) {
 }
 
 bool valid(int pad, int step) {
-    return validPad(pad) && step >= 0 && step < kSteps;
+    return validPad(pad) && step >= 0 && step < kMaxSteps;
 }
+
+// What a lane is called, for the built-in ones.
+QString builtinLaneName(const QString &id) {
+    if (id == "pitch")
+        return QObject::tr("Pitch");
+    if (id == "volume")
+        return QObject::tr("Volume");
+    if (id == "pan")
+        return QObject::tr("Pan");
+    if (id == "filter")
+        return QObject::tr("Filter");
+    if (id == "resonance")
+        return QObject::tr("Resonance");
+    if (id == "decay")
+        return QObject::tr("Decay");
+    return id;
+}
+
+const QStringList kBuiltinLanes{"pitch", "volume", "pan", "filter", "resonance", "decay"};
 
 QString musicFolder() {
     const QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
@@ -68,8 +87,22 @@ Backend::Backend(Engine *engine, FilePicker *picker, QObject *parent)
     connect(m_engine, &Engine::positionChanged, this, &Backend::onPosition);
     connect(m_engine, &Engine::repeated, this, [this](int pad, int pattern, int step) {
         emit padHit(pad);
-        if (m_recording && m_playing)
-            record(pad, pattern, step, kDefaultLevel, false);
+        if (m_recording && m_playing && m_playTick >= 0)
+        {
+            // The nearest step is the one heard or one ahead of it.
+            const int length = m_song.patterns[pattern].length;
+            record(pad, pattern, m_playTick + ((step - m_playStep) % length + length) % length, kDefaultLevel, false);
+        }
+    });
+    // The meters fall back gently rather than flicker.
+    m_meterTimer.setInterval(50);
+    connect(&m_meterTimer, &QTimer::timeout, this, [this] {
+        const std::array<float, kPads + 1> peaks = m_engine->takePeaks();
+        QVariantList meters;
+        for (int i = 0; i <= kPads; ++i)
+            meters << std::max(double(peaks[i]), (i < m_meters.size() ? m_meters[i].toDouble() : 0.0) * 0.75);
+        m_meters = meters;
+        emit metersChanged();
     });
     connect(m_engine, &Engine::failed, this, [this](const QString &kind, const QString &detail) {
         setMessage(kind, {}, detail);
@@ -115,27 +148,81 @@ QVariantList Backend::usedPatterns() const {
     return list;
 }
 
+// The bank's sixteen rows of the pattern being edited: each step's level,
+// roll, chance, and nudge, the track's own loop, and its lanes.
 QVariantList Backend::grid() const {
     QVariantList rows;
     const Pattern &pattern = m_song.patterns[m_editPattern];
-    for (int p = 0; p < kPads; ++p) {
-        QVariantList row;
-        for (const Step &step : pattern.steps[p])
-            row << step.level;
-        rows << QVariant(row);
+    for (int p = m_bank * kBankPads; p < (m_bank + 1) * kBankPads; ++p) {
+        QVariantList levels, rolls, chances, nudges;
+        const QVector<Step> &steps = pattern.steps[p];
+        for (int i = 0; i < pattern.length; ++i) {
+            levels << steps[i].level;
+            rolls << steps[i].roll;
+            chances << steps[i].chance;
+            nudges << steps[i].nudge;
+        }
+        const int loop = m_song.pads[p].loop;
+        QVariantList lanes;
+        const Lanes padLanes = pattern.lanes.value(p);
+        for (auto it = padLanes.begin(); it != padLanes.end(); ++it)
+            lanes << laneOf(p, it.key(), it.value(), pattern.length);
+        rows << QVariantMap{{"steps", levels},
+                            {"roll", rolls},
+                            {"chance", chances},
+                            {"nudge", nudges},
+                            {"loop", loop > 0 ? std::min(loop, pattern.length) : pattern.length},
+                            {"lanes", lanes}};
     }
     return rows;
+}
+
+// A lane as the grid shows it: its name and range, and its value on each
+// step, where one is set.
+QVariantMap Backend::laneOf(int pad, const QString &id, const Lane &points, int length) const {
+    const LaneInfo info = laneInfo(id);
+    QString name = builtinLaneName(id);
+    double min = info.min, max = info.max;
+    bool stepped = info.stepped;
+    if (info.target != "pad") {
+        const Live live = m_live.value(info.target == "synth" ? slotKey(pad, -1) : slotKey(pad, info.effect));
+        name = info.param;
+        if (live.processor) {
+            for (const Parameter &p : live.processor->parameters())
+                if (p.id == info.param) {
+                    name = p.name;
+                    min = p.min;
+                    max = p.max;
+                    stepped = p.stepped;
+                }
+            name = live.processor->name() + ": " + name;
+        }
+    }
+    QVariantList values;
+    for (int i = 0; i < length; ++i)
+        values << (points.contains(i) ? QVariant(points.value(i)) : QVariant());
+    return {{"id", id}, {"name", name}, {"min", min}, {"max", max}, {"stepped", stepped}, {"values", values}};
 }
 
 QVariantList Backend::pads() const {
     QVariantList list;
     for (int p = 0; p < kPads; ++p) {
         const Pad &pad = m_song.pads[p];
-        const QString state = pad.sample.isEmpty()              ? "kit"
+        const QString state = pad.sample.isEmpty()              ? (p < kBankPads ? "kit" : "empty")
                               : m_samples.contains(pad.sample)  ? "ready"
                               : m_loading.contains(pad.sample)  ? "loading"
                                                                 : "failed";
-        list << QVariantMap{{"id", kitIds()[p]},
+        list << QVariantMap{{"id", p < kBankPads ? kitIds()[p] : QString()},
+                            {"name", padName(p)},
+                            {"pan", pad.pan},
+                            {"filter", pad.filter},
+                            {"resonance", pad.resonance},
+                            {"attack", pad.attack},
+                            {"decay", pad.decay},
+                            {"reverse", pad.reverse},
+                            {"gate", pad.gate},
+                            {"swing", pad.swing},
+                            {"loop", pad.loop},
                             {"sample", QFileInfo(pad.sample).completeBaseName()},
                             {"chop", pad.isChop()},
                             {"state", state},
@@ -289,11 +376,11 @@ void Backend::syncRack() {
             rack.synths[p] = use(slotKey(p, -1), pad.synth);
         for (int i = 0; i < pad.effects.size(); ++i)
             if (auto processor = use(slotKey(p, i), pad.effects[i]))
-                rack.effects[p] << RackSlot{processor, pad.effects[i].bypass};
+                rack.effects[p] << RackSlot{processor, pad.effects[i].bypass, i};
     }
     for (int i = 0; i < m_song.master.size(); ++i)
         if (auto processor = use(slotKey(-1, i), m_song.master[i]))
-            rack.master << RackSlot{processor, m_song.master[i].bypass};
+            rack.master << RackSlot{processor, m_song.master[i].bypass, i};
     m_engine->setRack(rack);
     // Let go of the rest only now that the audio thread has, on this thread.
     for (auto it = m_live.begin(); it != m_live.end();)
@@ -434,13 +521,23 @@ void Backend::removeEffect(int target, int index) {
         return;
     Song next = m_song;
     if (index < 0) {
-        if (target >= 0)
+        if (target >= 0) {
             next.pads[target].synth = PluginSlot{};
+            moveLanes(next, target, [](const QString &id) { return id.startsWith("synth.") ? QString() : id; });
+        }
     } else {
         QVector<PluginSlot> &chain = chainOf(next, target);
         if (index >= chain.size())
             return;
         chain.removeAt(index);
+        // The effects after it move up, and their lanes with them.
+        if (target >= 0)
+            moveLanes(next, target, [index](const QString &id) {
+                const LaneInfo info = laneInfo(id);
+                if (info.target != "fx" || info.effect < index)
+                    return id;
+                return info.effect == index ? QString() : QString("fx%1.%2").arg(info.effect).arg(info.param);
+            });
     }
     apply(next);
 }
@@ -454,6 +551,13 @@ void Backend::moveEffect(int target, int index, int delta) {
     if (index < 0 || index >= chain.size() || to < 0 || to >= chain.size())
         return;
     chain.move(index, to);
+    if (target >= 0)
+        moveLanes(next, target, [index, to](const QString &id) {
+            const LaneInfo info = laneInfo(id);
+            if (info.target != "fx" || (info.effect != index && info.effect != to))
+                return id;
+            return QString("fx%1.%2").arg((info.effect == index ? to : index) + 1).arg(info.param);
+        });
     apply(next);
 }
 
@@ -470,6 +574,8 @@ void Backend::setSynth(int pad, const QString &id) {
         return;
     Song next = m_song;
     next.pads[pad].synth = id.isEmpty() ? PluginSlot{} : PluginSlot{id, {}, {}, false};
+    // Another synth has other parameters.
+    moveLanes(next, pad, [](const QString &lane) { return lane.startsWith("synth.") ? QString() : lane; });
     apply(next);
 }
 
@@ -516,7 +622,7 @@ std::array<SampleBuffer, kPads> Backend::sounds() const {
     std::array<SampleBuffer, kPads> sounds;
     for (int p = 0; p < kPads; ++p) {
         const Pad &pad = m_song.pads[p];
-        sounds[p] = pad.sample.isEmpty() ? kitSound(p) : padSound(pad);
+        sounds[p] = pad.sample.isEmpty() ? (p < kBankPads ? kitSound(p) : SampleBuffer()) : padSound(pad);
     }
     return sounds;
 }
@@ -705,17 +811,19 @@ void Backend::padDown(int pad, int level) {
         m_held.insert(pad);
         m_engine->hold(pad, true, level);
     }
-    if (!m_recording || !m_playing || m_playStep < 0)
+    if (!m_recording || !m_playing || m_playTick < 0)
         return;
     // Recorded on the nearest step: the one heard last, or the next if the
     // hit came more than halfway to it.
     const double stepMs = 60000.0 / m_song.bpm / 4;
     const bool late = m_sinceStep.elapsed() > stepMs / 2;
-    const int step = (m_playStep + (late ? 1 : 0)) % kSteps;
-    record(pad, m_playPattern, step, level, late);
+    record(pad, m_playPattern, m_playTick + (late ? 1 : 0), level, late);
 }
 
 void Backend::padUp(int pad) {
+    if (!validPad(pad))
+        return;
+    m_engine->release(pad);
     if (!m_held.remove(pad))
         return;
     m_engine->hold(pad, false, 0);
@@ -727,9 +835,15 @@ void Backend::releaseAll() {
     m_held.clear();
 }
 
-void Backend::record(int pad, int pattern, int step, int level, bool suppress) {
-    if (pattern < 0 || pattern >= kPatterns || !valid(pad, step))
+int Backend::rowStep(int pad, int pattern, int tick) const {
+    const int loop = m_song.pads[pad].loop;
+    return tick % std::max(1, loop > 0 ? loop : m_song.patterns[pattern].length);
+}
+
+void Backend::record(int pad, int pattern, int tick, int level, bool suppress) {
+    if (pattern < 0 || pattern >= kPatterns || !validPad(pad) || tick < 0)
         return;
+    const int step = rowStep(pad, pattern, tick);
     // The step after the one heard hasn't played yet; it was heard just now,
     // live, so the sequence skips it this time round.
     if (suppress)
@@ -745,6 +859,20 @@ void Backend::selectPad(int pad) {
     if (!validPad(pad) || pad == m_selectedPad)
         return;
     m_selectedPad = pad;
+    // The grid shows the bank the pad is in.
+    if (pad / kBankPads != m_bank) {
+        m_bank = pad / kBankPads;
+        emit gridChanged();
+    }
+    emit selectedPadChanged();
+}
+
+void Backend::setBank(int bank) {
+    if (bank < 0 || bank >= kBanks || bank == m_bank)
+        return;
+    m_bank = bank;
+    m_selectedPad = bank * kBankPads + m_selectedPad % kBankPads;
+    emit gridChanged();
     emit selectedPadChanged();
 }
 
@@ -842,7 +970,7 @@ void Backend::sliceEven(int count) {
     const SampleBuffer sound = m_samples.value(m_chopPath);
     if (!sound || count < 1)
         return;
-    m_chopStarts = evenSlices(duration(sound), std::min(count, kPads));
+    m_chopStarts = evenSlices(duration(sound), std::min(count, kBankPads));
     emit chopChanged();
 }
 
@@ -850,7 +978,7 @@ void Backend::sliceTransients() {
     const SampleBuffer sound = m_samples.value(m_chopPath);
     if (!sound)
         return;
-    m_chopStarts = transientSlices(sound, kPads);
+    m_chopStarts = transientSlices(sound, kBankPads);
     emit chopChanged();
 }
 
@@ -867,7 +995,9 @@ int Backend::assignChops(int firstPad) {
         return 0;
     Song next = m_song;
     int count = 0;
-    for (int i = 0; i < m_chopStarts.size() && firstPad + i < kPads; ++i, ++count) {
+    // The chops fill the bank from the pad chosen, and stop at its end.
+    const int bankEnd = (firstPad / kBankPads + 1) * kBankPads;
+    for (int i = 0; i < m_chopStarts.size() && firstPad + i < bankEnd; ++i, ++count) {
         Pad &pad = next.pads[firstPad + i];
         pad.sample = m_chopPath;
         pad.start = m_chopStarts[i];
@@ -897,7 +1027,7 @@ void Backend::stop() {
     m_playing = false;
     m_recording = false;
     m_coalesce.clear();
-    m_playStep = m_playPattern = m_playChainIndex = -1;
+    m_playStep = m_playPattern = m_playChainIndex = m_playTick = -1;
     emit playingChanged();
     emit positionChanged();
 }
@@ -941,13 +1071,21 @@ void Backend::onPosition(int chainIndex, int pattern, int step) {
     if (!m_playing)
         return;
     m_sinceStep.start();
+    // The tracks with a loop of their own count from when the pattern came
+    // in, as the renderer does: a pattern that carries on keeps counting.
+    if (m_playTick < 0 || pattern != m_playPattern) {
+        m_playTick = step;
+    } else {
+        const int length = m_song.patterns[pattern].length;
+        m_playTick += ((step - m_playStep) % length + length) % length;
+    }
     m_playChainIndex = chainIndex;
     m_playPattern = pattern;
     m_playStep = step;
     emit positionChanged();
     const Pattern &playing = m_song.patterns[pattern];
     for (int pad = 0; pad < kPads; ++pad)
-        if (playing.steps[pad][step].on() && m_song.audible(pad))
+        if (playing.steps[pad][rowStep(pad, pattern, m_playTick)].on() && m_song.audible(pad))
             emit padHit(pad);
     // Playing the song, the grid follows it.
     if (m_songMode && !m_song.chain.isEmpty() && pattern != m_editPattern) {
@@ -963,6 +1101,8 @@ void Backend::replaceSong(const Song &song, const QString &path) {
     m_redo.clear();
     m_coalesce.clear();
     m_editPattern = 0;
+    m_bank = 0;
+    m_selectedPad = 0;
     m_path = path;
     emit fileChanged();
     sync();
@@ -1081,4 +1221,239 @@ void Backend::redo() {
     m_song = m_redo.takeLast();
     m_coalesce.clear();
     sync();
+}
+
+void Backend::cycleRoll(int pad, int step) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    Step &s = next.patterns[m_editPattern].steps[pad][step];
+    if (!s.on())
+        return;
+    s.roll = s.roll % kMaxRoll + 1;
+    apply(next);
+}
+
+void Backend::cycleChance(int pad, int step) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    Step &s = next.patterns[m_editPattern].steps[pad][step];
+    if (!s.on())
+        return;
+    // Always, then three times in four, half, a quarter, and back.
+    s.chance = s.chance > 75 ? 75 : s.chance > 50 ? 50 : s.chance > 25 ? 25 : 100;
+    apply(next);
+}
+
+void Backend::nudgeStep(int pad, int step, int delta) {
+    if (!valid(pad, step))
+        return;
+    Song next = m_song;
+    Step &s = next.patterns[m_editPattern].steps[pad][step];
+    if (!s.on())
+        return;
+    s.nudge = qBound(-kMaxNudge, s.nudge + delta, kMaxNudge);
+    apply(next, QString("nudge %1 %2 %3").arg(m_editPattern).arg(pad).arg(step));
+}
+
+void Backend::cyclePatternLength() {
+    Song next = m_song;
+    Pattern &pattern = next.patterns[m_editPattern];
+    pattern.length = pattern.length % kMaxSteps + kSteps;
+    apply(next);
+}
+
+void Backend::moveLanes(Song &song, int pad, const std::function<QString(const QString &)> &rename) const {
+    for (Pattern &pattern : song.patterns) {
+        if (!pattern.lanes.contains(pad))
+            continue;
+        Lanes moved;
+        const Lanes lanes = pattern.lanes.value(pad);
+        for (auto it = lanes.begin(); it != lanes.end(); ++it) {
+            const QString id = rename(it.key());
+            if (!id.isEmpty())
+                moved.insert(id, it.value());
+        }
+        if (moved.isEmpty())
+            pattern.lanes.remove(pad);
+        else
+            pattern.lanes[pad] = moved;
+    }
+}
+
+QVariantList Backend::laneChoices(int pad) const {
+    QVariantList list;
+    if (!validPad(pad))
+        return list;
+    const Lanes taken = m_song.patterns[m_editPattern].lanes.value(pad);
+    auto add = [&](const QString &id, const QString &name, const QString &group) {
+        if (!taken.contains(id))
+            list << QVariantMap{{"id", id}, {"name", name}, {"group", group}};
+    };
+    for (const QString &id : kBuiltinLanes)
+        add(id, builtinLaneName(id), tr("Track"));
+    const Pad &settings = m_song.pads[pad];
+    auto plugin = [&](const QString &key, const QString &prefix) {
+        const Live live = m_live.value(key);
+        if (!live.processor)
+            return;
+        for (const Parameter &p : live.processor->parameters())
+            add(prefix + p.id, p.name, live.processor->name());
+    };
+    if (!settings.synth.isEmpty())
+        plugin(slotKey(pad, -1), "synth.");
+    for (int i = 0; i < settings.effects.size(); ++i)
+        plugin(slotKey(pad, i), QString("fx%1.").arg(i + 1));
+    return list;
+}
+
+void Backend::addLane(int pad, const QString &id) {
+    const LaneInfo info = laneInfo(id);
+    if (!validPad(pad) || !info.valid)
+        return;
+    Song next = m_song;
+    Lanes &lanes = next.patterns[m_editPattern].lanes[pad];
+    if (lanes.contains(id))
+        return;
+    // A lane starts where the setting is, so adding it changes nothing yet.
+    double value = info.target == "pad" ? padValue(next.pads[pad], info.param) : 0;
+    if (info.target != "pad") {
+        const Live live = m_live.value(info.target == "synth" ? slotKey(pad, -1) : slotKey(pad, info.effect));
+        if (live.processor)
+            for (const Parameter &p : live.processor->parameters())
+                if (p.id == info.param)
+                    value = p.value;
+    }
+    lanes[id].insert(0, value);
+    apply(next);
+}
+
+void Backend::removeLane(int pad, const QString &id) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    Pattern &pattern = next.patterns[m_editPattern];
+    if (!pattern.lanes.contains(pad))
+        return;
+    pattern.lanes[pad].remove(id);
+    if (pattern.lanes[pad].isEmpty())
+        pattern.lanes.remove(pad);
+    apply(next);
+}
+
+void Backend::setLanePoint(int pad, const QString &id, int step, double value) {
+    if (!valid(pad, step) || step >= m_song.patterns[m_editPattern].length)
+        return;
+    const QVariantMap lane = laneOf(pad, id, {}, 0);
+    Song next = m_song;
+    const double min = lane.value("min").toDouble(), max = lane.value("max").toDouble();
+    value = qBound(min, value, max);
+    if (lane.value("stepped").toBool())
+        value = std::round(value);
+    next.patterns[m_editPattern].lanes[pad][id][step] = value;
+    // A drag across a lane undoes as one.
+    apply(next, QString("lane %1 %2 %3").arg(m_editPattern).arg(pad).arg(id));
+}
+
+void Backend::changeLanePoint(int pad, const QString &id, int step, double fraction) {
+    if (!valid(pad, step))
+        return;
+    const QVariantMap lane = laneOf(pad, id, {}, 0);
+    const double min = lane.value("min").toDouble(), max = lane.value("max").toDouble();
+    const Lane points = m_song.patterns[m_editPattern].lanes.value(pad).value(id);
+    double now = laneValue(points, step);
+    if (std::isnan(now)) {
+        const LaneInfo info = laneInfo(id);
+        now = info.target == "pad" ? padValue(m_song.pads[pad], info.param) : min;
+    }
+    // A stepped lane, as pitch is, moves a whole step at a time.
+    const double delta = lane.value("stepped").toBool() ? (fraction > 0 ? 1 : -1) : fraction * (max - min);
+    setLanePoint(pad, id, step, now + delta);
+}
+
+void Backend::clearLanePoint(int pad, const QString &id, int step) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    Pattern &pattern = next.patterns[m_editPattern];
+    if (!pattern.lanes.value(pad).value(id).contains(step))
+        return;
+    pattern.lanes[pad][id].remove(step);
+    apply(next);
+}
+
+void Backend::setPadSetting(int pad, const QString &name, double value) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    Pad &settings = next.pads[pad];
+    double *field = name == "volume"      ? &settings.volume
+                    : name == "pan"       ? &settings.pan
+                    : name == "filter"    ? &settings.filter
+                    : name == "resonance" ? &settings.resonance
+                    : name == "attack"    ? &settings.attack
+                    : name == "decay"     ? &settings.decay
+                                          : nullptr;
+    if (!field)
+        return;
+    const double low = name == "pan" || name == "filter" ? -1 : 0;
+    *field = qBound(low, std::round(value * 1000) / 1000, 1.0);
+    apply(next, QString("setting %1 %2").arg(pad).arg(name));
+}
+
+void Backend::toggleReverse(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].reverse = !next.pads[pad].reverse;
+    apply(next);
+    if (!m_playing)
+        m_engine->hit(pad, kDefaultLevel);
+}
+
+void Backend::toggleGate(int pad) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    next.pads[pad].gate = !next.pads[pad].gate;
+    apply(next);
+}
+
+void Backend::changePadSwing(int pad, int delta) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    int &swing = next.pads[pad].swing;
+    // A track's own swing starts from the song's; below the straightest
+    // it goes back to following the song.
+    if (swing == 0 && delta < 0)
+        return;
+    const int to = (swing == 0 ? m_song.swing : swing) + delta;
+    swing = to < kMinSwing ? 0 : std::min(to, kMaxSwing);
+    apply(next, QString("swing %1").arg(pad));
+}
+
+void Backend::changeLoop(int pad, int delta) {
+    if (!validPad(pad))
+        return;
+    Song next = m_song;
+    int &loop = next.pads[pad].loop;
+    // From the pattern's length, a loop of its own shortens or grows a step
+    // at a time; at the pattern's length again it follows the pattern.
+    const int length = next.patterns[m_editPattern].length;
+    const int from = loop == 0 ? length : loop;
+    const int to = qBound(1, from + delta, kMaxSteps);
+    loop = to == length ? 0 : to;
+    apply(next, QString("loop %1").arg(pad));
+}
+
+void Backend::setMetering(bool on) {
+    if (on) {
+        m_meterTimer.start();
+    } else {
+        m_meterTimer.stop();
+        m_meters.clear();
+        emit metersChanged();
+    }
 }

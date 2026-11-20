@@ -14,9 +14,13 @@ struct Svf {
         double low, band, high;
     };
 
-    Out process(double input, double cutoff, double q) {
-        const double g = std::tan(3.141592653589793 * std::min(cutoff, kRate * 0.45) / kRate);
-        const double k = 1.0 / q;
+    // The coefficient for a cutoff, for a caller that moves it less often
+    // than every sample.
+    static double coefficient(double cutoff) { return std::tan(3.141592653589793 * std::min(cutoff, kRate * 0.45) / kRate); }
+
+    Out process(double input, double cutoff, double q) { return processWith(input, coefficient(cutoff), 1.0 / q); }
+
+    Out processWith(double input, double g, double k) {
         const double a1 = 1.0 / (1.0 + g * (g + k));
         const double a2 = g * a1;
         const double a3 = g * a2;

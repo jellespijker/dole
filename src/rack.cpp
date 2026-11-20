@@ -7,7 +7,7 @@ RackSlot make(const PluginSlot &slot, const QString &where, QStringList *problem
     std::shared_ptr<Processor> processor = createProcessor(slot, &error);
     if (!processor)
         *problems << QString("%1: %2: %3").arg(where, slot.id, error);
-    return {processor, slot.bypass};
+    return {processor, slot.bypass, 0};
 }
 
 } // namespace
@@ -19,9 +19,11 @@ Rack buildRack(const Song &song, QStringList *problems) {
         const QString where = QString("Pad %1").arg(p + 1);
         if (!pad.synth.isEmpty())
             rack.synths[p] = make(pad.synth, where, problems).processor;
-        for (const PluginSlot &slot : pad.effects)
-            if (RackSlot made = make(slot, where, problems); made.processor)
+        for (int i = 0; i < pad.effects.size(); ++i)
+            if (RackSlot made = make(pad.effects[i], where, problems); made.processor) {
+                made.index = i;
                 rack.effects[p] << made;
+            }
     }
     for (const PluginSlot &slot : song.master)
         if (RackSlot made = make(slot, "Master", problems); made.processor)

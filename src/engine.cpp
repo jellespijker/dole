@@ -186,3 +186,13 @@ void AudioEngine::locked(const std::function<void()> &work) {
     QMutexLocker lock(&m_shared->mutex);
     work();
 }
+
+void AudioEngine::release(int pad) {
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->renderer.release(pad);
+}
+
+std::array<float, kPads + 1> AudioEngine::takePeaks() {
+    QMutexLocker lock(&m_shared->mutex);
+    return m_shared->renderer.takePeaks();
+}

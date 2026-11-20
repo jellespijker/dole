@@ -4,9 +4,11 @@
 #include <QHash>
 #include <QObject>
 #include <QSet>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
+#include <functional>
 
 #include "engine.h"
 #include "filepicker.h"
@@ -28,6 +30,9 @@ class Backend : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY songChanged)
     Q_PROPERTY(QVariantList grid READ grid NOTIFY gridChanged)
     Q_PROPERTY(int editPattern READ editPattern NOTIFY gridChanged)
+    Q_PROPERTY(int patternLength READ patternLength NOTIFY gridChanged)
+    Q_PROPERTY(int bank READ bank NOTIFY gridChanged)
+    Q_PROPERTY(QVariantList meters READ meters NOTIFY metersChanged)
     Q_PROPERTY(QVariantList pads READ pads NOTIFY padsChanged)
     Q_PROPERTY(int selectedPad READ selectedPad NOTIFY selectedPadChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
@@ -38,6 +43,7 @@ class Backend : public QObject {
     Q_PROPERTY(int playStep READ playStep NOTIFY positionChanged)
     Q_PROPERTY(int playPattern READ playPattern NOTIFY positionChanged)
     Q_PROPERTY(int playChainIndex READ playChainIndex NOTIFY positionChanged)
+    Q_PROPERTY(int playTick READ playTick NOTIFY positionChanged)
     Q_PROPERTY(QString chopName READ chopName NOTIFY chopChanged)
     Q_PROPERTY(QString chopState READ chopState NOTIFY chopChanged)
     Q_PROPERTY(QVariantList chopPeaks READ chopPeaks NOTIFY chopChanged)
@@ -64,6 +70,9 @@ public:
     bool canRedo() const { return !m_redo.isEmpty(); }
     QVariantList grid() const;
     int editPattern() const { return m_editPattern; }
+    int patternLength() const { return m_song.patterns[m_editPattern].length; }
+    int bank() const { return m_bank; }
+    QVariantList meters() const { return m_meters; }
     QVariantList pads() const;
     int selectedPad() const { return m_selectedPad; }
     bool playing() const { return m_playing; }
@@ -74,6 +83,9 @@ public:
     int playStep() const { return m_playStep; }
     int playPattern() const { return m_playPattern; }
     int playChainIndex() const { return m_playChainIndex; }
+    // Steps since the playing pattern came in: a track with its own loop is
+    // on this, counted round its loop.
+    int playTick() const { return m_playTick; }
     QString chopName() const;
     QString chopState() const;
     QVariantList chopPeaks() const { return m_chopPeaks; }
@@ -92,12 +104,28 @@ public:
     Q_INVOKABLE void toggleStep(int pad, int step);
     Q_INVOKABLE void clearStep(int pad, int step);
     Q_INVOKABLE void changeStep(int pad, int step, int delta);
+    // A step's roll (1 to 4 hits), chance, and nudge off the grid.
+    Q_INVOKABLE void cycleRoll(int pad, int step);
+    Q_INVOKABLE void cycleChance(int pad, int step);
+    Q_INVOKABLE void nudgeStep(int pad, int step, int delta);
+
+    // Lanes: a track's settings, or its plugins', moved step by step.
+    // A lane's value on a step can be set, nudged by a part of its range,
+    // or cleared, so the one before carries on.
+    Q_INVOKABLE QVariantList laneChoices(int pad) const;
+    Q_INVOKABLE void addLane(int pad, const QString &id);
+    Q_INVOKABLE void removeLane(int pad, const QString &id);
+    Q_INVOKABLE void setLanePoint(int pad, const QString &id, int step, double value);
+    Q_INVOKABLE void changeLanePoint(int pad, const QString &id, int step, double fraction);
+    Q_INVOKABLE void clearLanePoint(int pad, const QString &id, int step);
 
     // Patterns.
     Q_INVOKABLE void selectPattern(int pattern);
     Q_INVOKABLE void copyPattern();
     Q_INVOKABLE void pastePattern();
     Q_INVOKABLE void clearPattern();
+    // One to four bars.
+    Q_INVOKABLE void cyclePatternLength();
 
     // The song: its chain of patterns, tempo, swing, and grit.
     Q_INVOKABLE void chainInsert(int index, int pattern);
@@ -113,11 +141,21 @@ public:
     Q_INVOKABLE void padUp(int pad);
     Q_INVOKABLE void releaseAll();
     Q_INVOKABLE void selectPad(int pad);
+    // Banks A to D: the sixteen pads the fingers and the grid are on.
+    Q_INVOKABLE void setBank(int bank);
     Q_INVOKABLE void toggleMute(int pad);
     Q_INVOKABLE void toggleSolo(int pad);
     Q_INVOKABLE void changeVolume(int pad, double delta);
     Q_INVOKABLE void changeTune(int pad, int delta);
     Q_INVOKABLE void cycleGroup(int pad);
+    // "volume", "pan", "filter", "resonance", "attack", or "decay".
+    Q_INVOKABLE void setPadSetting(int pad, const QString &name, double value);
+    Q_INVOKABLE void toggleReverse(int pad);
+    Q_INVOKABLE void toggleGate(int pad);
+    // The track's own swing, from the song's (0) up to 75%.
+    Q_INVOKABLE void changePadSwing(int pad, int delta);
+    // The track's own loop, from the pattern's (0) to 64 steps.
+    Q_INVOKABLE void changeLoop(int pad, int delta);
     Q_INVOKABLE void chooseSample(int pad);
     Q_INVOKABLE void resetPad(int pad);
     void setSample(int pad, const QString &path);
@@ -165,6 +203,9 @@ public:
     Q_INVOKABLE void exportAudio();
     void exportTo(const QString &path);
 
+    // The mixer's meters move only while it is open.
+    Q_INVOKABLE void setMetering(bool on);
+
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void dismissMessage();
@@ -188,6 +229,7 @@ signals:
     void fileChanged();
     void exportingChanged();
     void messageChanged();
+    void metersChanged();
     // A pad was struck, by a finger or the sequence, so it can light up.
     void padHit(int pad);
     void saved();
@@ -207,7 +249,13 @@ private:
     void sampleLoaded(const QString &path);
     void setMessage(const QString &kind, const QString &arg = {}, const QString &detail = {});
     void onPosition(int chainIndex, int pattern, int step);
-    void record(int pad, int pattern, int step, int level, bool suppress);
+    // tick counts steps since the pattern came in; each track's own step
+    // follows from it.
+    void record(int pad, int pattern, int tick, int level, bool suppress);
+    int rowStep(int pad, int pattern, int tick) const;
+    // The lanes of a pad's effects follow them when they move.
+    void moveLanes(Song &song, int pad, const std::function<QString(const QString &)> &rename) const;
+    QVariantMap laneOf(int pad, const QString &id, const Lane &points, int length) const;
     SampleBuffer padSound(const Pad &pad) const;
     void syncRack();
     // The chain a target names, in a song.
@@ -252,6 +300,10 @@ private:
     int m_playStep = -1;
     int m_playPattern = -1;
     int m_playChainIndex = -1;
+    int m_playTick = -1; // steps since the playing pattern came in
+    int m_bank = 0;
+    QTimer m_meterTimer;
+    QVariantList m_meters;
     QElapsedTimer m_sinceStep; // since the step playing was heard
     bool m_exporting = false;
     QVariantMap m_message;

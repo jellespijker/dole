@@ -48,8 +48,8 @@ struct Command {
     QString argument(int index) const { return parser.positionalArguments().value(index); }
 };
 
-double seconds(const Song &song, int bars) {
-    return bars * kSteps * 60.0 / song.bpm / 4.0;
+double seconds(const Song &song, int steps) {
+    return steps * 60.0 / song.bpm / 4.0;
 }
 
 // Loads the song and decodes its samples; a problem anywhere is an error.
@@ -67,7 +67,7 @@ bool load(const QString &path, Song *song, std::array<SampleBuffer, kPads> *soun
     for (int p = 0; p < kPads; ++p) {
         const Pad &pad = song->pads[p];
         if (pad.sample.isEmpty()) {
-            (*sounds)[p] = kitSound(p);
+            (*sounds)[p] = kitSound(p); // nothing, past bank A
             continue;
         }
         if (!decoded.contains(pad.sample))
@@ -133,7 +133,9 @@ int check(const QStringList &arguments) {
             warnings << "Pattern " + patternName(p) + " is empty.";
     if (song.chain.isEmpty())
         warnings << "The song chain is empty; render plays pattern A once.";
-    const int bars = song.chain.isEmpty() ? 1 : int(song.chain.size());
+    // A pattern is one to four bars long.
+    const int steps = songSteps(song, 0);
+    const int bars = steps / kSteps;
 
     if (command.wantsJson()) {
         QJsonObject result{{"ok", ok},
@@ -147,7 +149,7 @@ int check(const QStringList &arguments) {
             result.insert("patterns", QJsonArray::fromStringList(used));
             result.insert("song", QJsonArray::fromStringList(chain));
             result.insert("bars", bars);
-            result.insert("seconds", qRound(seconds(song, bars) * 10) / 10.0);
+            result.insert("seconds", qRound(seconds(song, steps) * 10) / 10.0);
         }
         print(result);
     } else {
@@ -162,7 +164,7 @@ int check(const QStringList &arguments) {
                               .arg(gritName(song.grit), song.vinyl ? " with vinyl" : "")
                               .arg(used.isEmpty() ? "none" : used.join(" "), chain.isEmpty() ? "empty" : chain.join(" "))
                               .arg(bars)
-                              .arg(seconds(song, bars), 0, 'f', 1));
+                              .arg(seconds(song, steps), 0, 'f', 1));
         }
     }
     return ok ? 0 : 1;

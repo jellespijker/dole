@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QHash>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <algorithm>
@@ -37,13 +38,46 @@ QString relativeTo(const QString &baseDirectory, const QString &path) {
     return relative.startsWith("..") ? path : relative;
 }
 
-// A pad by its number ("1" to "16") or its kit sound's name ("boom").
+// A pad by its number ("1" to "64"), its bank and number ("B3"), or its
+// kit sound's name ("boom").
 int padIndex(const QString &key) {
     bool number = false;
     const int n = key.toInt(&number);
     if (number)
         return n >= 1 && n <= kPads ? n - 1 : -1;
+    if (key.size() >= 2 && key.at(0).toUpper() >= 'A' && key.at(0).toUpper() <= QChar('A' + kBanks - 1)) {
+        const int inBank = key.mid(1).toInt(&number);
+        if (number && inBank >= 1 && inBank <= kBankPads)
+            return (key.at(0).toUpper().unicode() - 'A') * kBankPads + inBank - 1;
+    }
     return kitIds().indexOf(key);
+}
+
+// Steps in JSON count from 1, as a musician counts them.
+QJsonObject stepNumbers(const QMap<int, double> &values) {
+    QJsonObject object;
+    for (auto it = values.begin(); it != values.end(); ++it)
+        object.insert(QString::number(it.key() + 1), std::round(it.value() * 10000) / 10000);
+    return object;
+}
+
+bool fromStepNumbers(const QJsonValue &value, int length, const QString &where, QMap<int, double> *out,
+                     QString *error) {
+    const QJsonObject object = value.toObject();
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        bool number = false;
+        const int step = it.key().toInt(&number) - 1;
+        if (!number || step < 0 || step >= length) {
+            *error = where + QString("\"%1\" isn't a step from 1 to %2.").arg(it.key()).arg(length);
+            return false;
+        }
+        if (!it.value().isDouble()) {
+            *error = where + QString("step %1 should be a number.").arg(it.key());
+            return false;
+        }
+        out->insert(step, it.value().toDouble());
+    }
+    return true;
 }
 
 QJsonObject slotToJson(const PluginSlot &slot) {
@@ -143,7 +177,15 @@ QJsonObject upgradeFromTracks(QJsonObject json) {
 
 } // namespace
 
+Pattern::Pattern() {
+    // Every new pattern shares one set of empty rows until it is written to.
+    static const QVector<QVector<Step>> empty(kPads, QVector<Step>(kMaxSteps));
+    steps = empty;
+}
+
 bool Pattern::isEmpty() const {
+    if (length != kSteps || !lanes.isEmpty())
+        return false;
     for (const auto &row : steps)
         for (const Step &step : row)
             if (step.on())
@@ -157,6 +199,72 @@ std::array<Pad, kPads> Song::defaultPads() {
     pads[6].group = 1;
     pads[7].group = 1;
     return pads;
+}
+
+QString padName(int pad) {
+    return QString(QChar('A' + pad / kBankPads)) + QString::number(pad % kBankPads + 1);
+}
+
+LaneInfo laneInfo(const QString &id) {
+    LaneInfo info;
+    static const QHash<QString, std::array<double, 2>> ranges{
+        {"pitch", {double(kMinTune), double(kMaxTune)}}, {"volume", {0, 1}}, {"pan", {-1, 1}},
+        {"filter", {-1, 1}}, {"resonance", {0, 1}}, {"decay", {0, 1}}};
+    if (ranges.contains(id)) {
+        info.valid = true;
+        info.target = "pad";
+        info.param = id;
+        info.min = ranges[id][0];
+        info.max = ranges[id][1];
+        info.stepped = id == "pitch";
+        return info;
+    }
+    // A plugin's range is the plugin's to say; the lane only names it.
+    if (id.startsWith("synth.") && id.size() > 6) {
+        info.valid = true;
+        info.target = "synth";
+        info.param = id.mid(6);
+        return info;
+    }
+    static const QRegularExpression effect("^fx([1-9])\\.(.+)$");
+    const QRegularExpressionMatch match = effect.match(id);
+    if (match.hasMatch() && match.captured(1).toInt() <= kMaxEffects) {
+        info.valid = true;
+        info.target = "fx";
+        info.effect = match.captured(1).toInt() - 1;
+        info.param = match.captured(2);
+    }
+    return info;
+}
+
+double padValue(const Pad &pad, const QString &param) {
+    if (param == "volume")
+        return pad.volume;
+    if (param == "pan")
+        return pad.pan;
+    if (param == "filter")
+        return pad.filter;
+    if (param == "resonance")
+        return pad.resonance;
+    if (param == "decay")
+        return pad.decay;
+    return 0; // pitch, which adds to the pad's tune
+}
+
+double laneValue(const Lane &lane, int step) {
+    auto it = lane.upperBound(step);
+    if (it == lane.begin())
+        return std::nan("");
+    return std::prev(it).value();
+}
+
+int songSteps(const Song &song, int pattern) {
+    if (song.chain.isEmpty())
+        return song.patterns[qBound(0, pattern, kPatterns - 1)].length;
+    int steps = 0;
+    for (int p : song.chain)
+        steps += song.patterns[p].length;
+    return steps;
 }
 
 bool Song::audible(int pad) const {
@@ -206,6 +314,23 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
             object.insert("end", seconds(pad.end));
         if (pad.tune != 0)
             object.insert("tune", pad.tune);
+        auto setting = [&](const char *name, double value, double unset) {
+            if (std::abs(value - unset) > 1e-9)
+                object.insert(name, std::round(value * 1000) / 1000);
+        };
+        setting("pan", pad.pan, 0);
+        setting("filter", pad.filter, 0);
+        setting("resonance", pad.resonance, 0);
+        setting("attack", pad.attack, 0);
+        setting("decay", pad.decay, 1);
+        if (pad.reverse)
+            object.insert("reverse", true);
+        if (pad.gate)
+            object.insert("gate", true);
+        if (pad.swing != 0)
+            object.insert("swing", pad.swing);
+        if (pad.loop != 0)
+            object.insert("loop", pad.loop);
         if (pad.group != defaults[p].group)
             object.insert("group", pad.group);
         if (pad.mute)
@@ -218,6 +343,9 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
             object.insert("length", pad.length);
         if (!pad.effects.isEmpty())
             object.insert("effects", chainToJson(pad.effects));
+        // The empty pads of banks B to D are left out.
+        if (p >= kBankPads && pad == defaults[p])
+            continue;
         pads.insert(QString::number(p + 1), object);
     }
 
@@ -227,12 +355,43 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
         if (pattern.isEmpty())
             continue;
         QJsonObject rows;
+        if (pattern.length != kSteps)
+            rows.insert("length", pattern.length);
         for (int pad = 0; pad < kPads; ++pad) {
             QString row;
-            for (const Step &step : pattern.steps[pad])
+            QMap<int, double> roll, chance, nudge;
+            for (int i = 0; i < pattern.length; ++i) {
+                const Step &step = pattern.steps[pad][i];
                 row += levelChar(step.level);
-            if (row != QString(kSteps, '.'))
-                rows.insert(QString::number(pad + 1), row);
+                if (step.roll != 1)
+                    roll.insert(i, step.roll);
+                if (step.chance != 100)
+                    chance.insert(i, step.chance);
+                if (step.nudge != 0)
+                    nudge.insert(i, step.nudge);
+            }
+            const Lanes lanes = pattern.lanes.value(pad);
+            const QString key = QString::number(pad + 1);
+            // A row of plain steps is a string; one with more to it, an object.
+            if (roll.isEmpty() && chance.isEmpty() && nudge.isEmpty() && lanes.isEmpty()) {
+                if (row != QString(pattern.length, '.'))
+                    rows.insert(key, row);
+                continue;
+            }
+            QJsonObject object{{"steps", row}};
+            if (!roll.isEmpty())
+                object.insert("roll", stepNumbers(roll));
+            if (!chance.isEmpty())
+                object.insert("chance", stepNumbers(chance));
+            if (!nudge.isEmpty())
+                object.insert("nudge", stepNumbers(nudge));
+            if (!lanes.isEmpty()) {
+                QJsonObject lanesJson;
+                for (auto it = lanes.begin(); it != lanes.end(); ++it)
+                    lanesJson.insert(it.key(), stepNumbers(it.value()));
+                object.insert("lanes", lanesJson);
+            }
+            rows.insert(key, object);
         }
         patterns.insert(patternName(p), rows);
     }
@@ -241,7 +400,7 @@ QJsonObject songToJson(const Song &song, const QString &baseDirectory) {
     for (int p : song.chain)
         chain.append(patternName(p));
 
-    QJsonObject json{{"dole", 2},           {"bpm", song.bpm},     {"swing", song.swing}, {"grit", gritName(song.grit)},
+    QJsonObject json{{"dole", 3},           {"bpm", song.bpm},     {"swing", song.swing}, {"grit", gritName(song.grit)},
                      {"vinyl", song.vinyl}, {"pads", pads},        {"patterns", patterns}, {"song", chain}};
     if (!song.master.isEmpty())
         json.insert("master", chainToJson(song.master));
@@ -255,8 +414,8 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
         return false;
     };
     const int version = input.value("dole").toInt();
-    if (version != 1 && version != 2)
-        return fail("Not a dole song: \"dole\" should be 2.");
+    if (version < 1 || version > 3)
+        return fail("Not a dole song: \"dole\" should be 3.");
     const QJsonObject json = version == 1 ? upgradeFromTracks(input) : input;
 
     Song song;
@@ -279,7 +438,7 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
     for (auto it = pads.begin(); it != pads.end(); ++it) {
         const int p = padIndex(it.key());
         if (p < 0)
-            return fail(QString("Unknown pad \"%1\"; pads are 1 to 16.").arg(it.key()));
+            return fail(QString("Unknown pad \"%1\"; pads are 1 to 64, or A1 to D16.").arg(it.key()));
         const QJsonObject object = it.value().toObject();
         Pad &pad = song.pads[p];
         pad.volume = qBound(0.0, object.value("volume").toDouble(pad.volume), 1.0);
@@ -291,6 +450,27 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
             return fail(QString("Pad %1: \"group\" should be between 0 and %2.").arg(p + 1).arg(kGroups));
         pad.mute = object.value("mute").toBool();
         pad.solo = object.value("solo").toBool();
+        const QString at = QString("Pad %1: ").arg(p + 1);
+        auto setting = [&](const char *name, double *value, double low, double high) {
+            *value = object.value(name).toDouble(*value);
+            if (*value < low || *value > high) {
+                fail(at + QString("\"%1\" should be between %2 and %3.").arg(name).arg(low).arg(high));
+                return false;
+            }
+            return true;
+        };
+        if (!setting("pan", &pad.pan, -1, 1) || !setting("filter", &pad.filter, -1, 1)
+            || !setting("resonance", &pad.resonance, 0, 1) || !setting("attack", &pad.attack, 0, 1)
+            || !setting("decay", &pad.decay, 0, 1))
+            return false;
+        pad.reverse = object.value("reverse").toBool();
+        pad.gate = object.value("gate").toBool();
+        pad.swing = object.value("swing").toInt(0);
+        if (pad.swing != 0 && (pad.swing < kMinSwing || pad.swing > kMaxSwing))
+            return fail(at + QString("\"swing\" should be between %1 and %2.").arg(kMinSwing).arg(kMaxSwing));
+        pad.loop = object.value("loop").toInt(0);
+        if (pad.loop < 0 || pad.loop > kMaxSteps)
+            return fail(at + QString("\"loop\" should be between 1 and %1 steps.").arg(kMaxSteps));
         const QString sample = object.value("sample").toString();
         if (!sample.isEmpty())
             pad.sample = QDir::cleanPath(QDir(baseDirectory).absoluteFilePath(sample));
@@ -315,19 +495,67 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
         if (p < 0)
             return fail(QString("Unknown pattern \"%1\"; patterns are A to H.").arg(it.key()));
         const QJsonObject rows = it.value().toObject();
+        Pattern &pattern = song.patterns[p];
+        pattern.length = rows.value("length").toInt(kSteps);
+        if (pattern.length % kSteps != 0 || pattern.length < kSteps || pattern.length > kMaxSteps)
+            return fail(QString("Pattern %1: \"length\" is 16, 32, 48, or 64 steps.").arg(it.key()));
         for (auto row = rows.begin(); row != rows.end(); ++row) {
+            if (row.key() == "length")
+                continue;
             const int pad = padIndex(row.key());
             const QString where = QString("Pattern %1, pad %2: ").arg(it.key(), row.key());
             if (pad < 0)
-                return fail(where + "unknown pad; pads are 1 to 16.");
-            const QString compact = row.value().toString().remove(' ').remove('|');
-            if (compact.size() != kSteps)
-                return fail(where + QString("needs %1 steps, has %2.").arg(kSteps).arg(compact.size()));
-            for (int s = 0; s < kSteps; ++s) {
+                return fail(where + "unknown pad; pads are 1 to 64, or A1 to D16.");
+            const QJsonObject object = row.value().toObject();
+            const QString compact = (row.value().isString() ? row.value().toString() : object.value("steps").toString())
+                                        .remove(' ')
+                                        .remove('|');
+            if (compact.size() != pattern.length)
+                return fail(where + QString("needs %1 steps, has %2.").arg(pattern.length).arg(compact.size()));
+            QVector<Step> &steps = pattern.steps[pad];
+            for (int s = 0; s < pattern.length; ++s) {
                 const int level = charLevel(compact[s]);
                 if (level < 0)
                     return fail(where + QString("\"%1\" is not a step; use . x X or 1 to 4.").arg(compact[s]));
-                song.patterns[p].steps[pad][s].level = level;
+                steps[s].level = level;
+            }
+            QMap<int, double> roll, chance, nudge;
+            QString problem;
+            if (!fromStepNumbers(object.value("roll"), pattern.length, where + "roll: ", &roll, &problem)
+                || !fromStepNumbers(object.value("chance"), pattern.length, where + "chance: ", &chance, &problem)
+                || !fromStepNumbers(object.value("nudge"), pattern.length, where + "nudge: ", &nudge, &problem))
+                return fail(problem);
+            for (auto r = roll.begin(); r != roll.end(); ++r) {
+                if (r.value() < 1 || r.value() > kMaxRoll)
+                    return fail(where + QString("a roll is 1 to %1 hits.").arg(kMaxRoll));
+                steps[r.key()].roll = int(r.value());
+            }
+            for (auto c = chance.begin(); c != chance.end(); ++c) {
+                if (c.value() < 0 || c.value() > 100)
+                    return fail(where + "a chance is 0 to 100 percent.");
+                steps[c.key()].chance = int(c.value());
+            }
+            for (auto n = nudge.begin(); n != nudge.end(); ++n) {
+                if (std::abs(n.value()) > kMaxNudge)
+                    return fail(where + QString("a nudge is -%1 to %1 percent of a step.").arg(kMaxNudge));
+                steps[n.key()].nudge = int(n.value());
+            }
+            const QJsonObject lanes = object.value("lanes").toObject();
+            for (auto lane = lanes.begin(); lane != lanes.end(); ++lane) {
+                const LaneInfo info = laneInfo(lane.key());
+                if (!info.valid)
+                    return fail(where + QString("\"%1\" isn't a lane; lanes are pitch, volume, pan, filter, resonance, "
+                                                "decay, synth.<parameter>, and fx<n>.<parameter>.")
+                                            .arg(lane.key()));
+                Lane points;
+                if (!fromStepNumbers(lane.value(), pattern.length, where + lane.key() + ": ", &points, &problem))
+                    return fail(problem);
+                if (info.target == "pad")
+                    for (auto point = points.begin(); point != points.end(); ++point)
+                        if (point.value() < info.min || point.value() > info.max)
+                            return fail(where + QString("%1 goes from %2 to %3.").arg(lane.key()).arg(info.min).arg(info.max));
+                if (!points.isEmpty())
+                    pattern.lanes[pad][lane.key()] = points;
             }
         }
     }

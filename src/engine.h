@@ -24,6 +24,8 @@ public:
     // A pad struck live, and held for note repeat.
     virtual void hit(int pad, int level) = 0;
     virtual void hold(int pad, bool held, int level) = 0;
+    // A pad let go: a gated one stops.
+    virtual void release(int pad) { Q_UNUSED(pad); }
     virtual void setRepeat(int division) = 0;
     virtual void suppress(int pad, int pattern, int step) = 0;
     virtual void preview(const SampleBuffer &sound, double rate) = 0;
@@ -31,6 +33,8 @@ public:
     // Runs work while the audio is held off, for changing a plugin the
     // audio thread is playing.
     virtual void locked(const std::function<void()> &work) = 0;
+    // The loudest each pad, and then the mix, got since the last ask.
+    virtual std::array<float, kPads + 1> takePeaks() { return {}; }
 
 signals:
     void positionChanged(int chainIndex, int pattern, int step);
@@ -57,11 +61,13 @@ public:
     void stop() override;
     void hit(int pad, int level) override;
     void hold(int pad, bool held, int level) override;
+    void release(int pad) override;
     void setRepeat(int division) override;
     void suppress(int pad, int pattern, int step) override;
     void preview(const SampleBuffer &sound, double rate) override;
     void setRack(const Rack &rack) override;
     void locked(const std::function<void()> &work) override;
+    std::array<float, kPads + 1> takePeaks() override;
     // Opens the output ahead of the first Space, which would otherwise wait
     // most of a second for it. It opens on the audio thread, so the window
     // never waits.

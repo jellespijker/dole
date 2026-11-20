@@ -9,6 +9,7 @@
 struct RackSlot {
     std::shared_ptr<Processor> processor;
     bool bypass = false;
+    int index = 0; // its place in the song's chain, which a lane names it by
 };
 
 // The plugins a song plays through, made: each pad's synth and effects, and

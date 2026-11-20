@@ -72,8 +72,7 @@ Popup {
 
         Label {
             objectName: "chainTitle"
-            text: view.isPad ? qsTr("Pad %1").arg((view.target + 1).toLocaleString(Qt.locale(translator.language), 'f', 0))
-                               + "  " + Names.pad(backend.pads[view.target])
+            text: view.isPad ? qsTr("Pad %1").arg(backend.pads[view.target].name) + "  " + Names.pad(backend.pads[view.target])
                              : qsTr("Master effects")
             font.bold: true
             font.pixelSize: 18

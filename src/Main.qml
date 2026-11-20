@@ -21,8 +21,13 @@ ApplicationWindow {
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
-    readonly property bool idle: !help.opened && !confirm.opened && !chop.opened && !chain.opened
+    readonly property bool idle: !help.opened && !confirm.opened && !chop.opened && !chain.opened && !mixer.opened
+                                 && !lanePicker.opened
     property int cursorStep: 0
+    // -1 is the steps; 0 and up the selected track's lanes, when it is open.
+    property int cursorLane: -1
+    // The tracks opened up to their lanes, by pad.
+    property var expanded: ({})
     property bool songFocus: false
     property int songCursor: 0
     property bool closing: false
@@ -30,6 +35,61 @@ ApplicationWindow {
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function patternName(p) { return String.fromCharCode(65 + p) }
     function chainStart() { return Math.min(songCursor, Math.max(0, backend.chain.length - 1)) }
+
+    function bankRow(pad) { return backend.grid[pad - backend.bank * 16] }
+    function laneCount(pad) {
+        const row = bankRow(pad)
+        return expanded[pad] && row ? row.lanes.length : 0
+    }
+    function laneAt(pad, lane) { return bankRow(pad).lanes[lane].id }
+    function onLane() { return cursorLane >= 0 && cursorLane < laneCount(backend.selectedPad) }
+
+    function toggleExpanded(pad) {
+        const open = Object.assign({}, expanded)
+        open[pad] = !open[pad]
+        expanded = open
+        if (!open[pad] && pad === backend.selectedPad)
+            cursorLane = -1
+    }
+    function expand(pad) {
+        if (!expanded[pad])
+            toggleExpanded(pad)
+    }
+    // A track's lanes open, or, with none yet, the list of what can have one.
+    function showLanes(pad) {
+        const row = bankRow(pad)
+        if (row && row.lanes.length === 0)
+            lanePicker.openFor(pad)
+        else
+            toggleExpanded(pad)
+    }
+
+    // Up and down go through the tracks of the bank and the lanes of the
+    // open ones.
+    function moveRow(delta) {
+        const pad = backend.selectedPad
+        const start = backend.bank * 16
+        if (delta < 0) {
+            if (cursorLane >= 0) {
+                cursorLane--
+                return
+            }
+            const previous = start + (pad - start + 15) % 16
+            backend.selectPad(previous)
+            cursorLane = laneCount(previous) - 1
+        } else {
+            if (cursorLane + 1 < laneCount(pad)) {
+                cursorLane++
+                return
+            }
+            backend.selectPad(start + (pad - start + 1) % 16)
+            cursorLane = -1
+        }
+    }
+    function moveStep(delta) {
+        const length = backend.patternLength
+        cursorStep = ((cursorStep + delta) % length + length) % length
+    }
 
     function moveSongCursor(delta) {
         songCursor = Math.max(0, Math.min(backend.chain.length, songCursor + delta))
@@ -101,6 +161,13 @@ ApplicationWindow {
             if (win.songCursor > backend.chain.length)
                 win.songCursor = backend.chain.length
         }
+        function onSelectedPadChanged() { win.cursorLane = -1 }
+        function onGridChanged() {
+            if (win.cursorStep >= backend.patternLength)
+                win.cursorStep = backend.patternLength - 1
+            if (win.cursorLane >= win.laneCount(backend.selectedPad))
+                win.cursorLane = win.laneCount(backend.selectedPad) - 1
+        }
     }
 
     // Playing.
@@ -134,11 +201,17 @@ ApplicationWindow {
     Shortcut { sequence: "K"; enabled: win.idle; onActivated: chop.open() }
     Shortcut { sequence: "J"; enabled: win.idle; onActivated: chain.openFor(backend.selectedPad) }
     Shortcut { sequence: "Shift+J"; enabled: win.idle; onActivated: chain.openFor(-1) }
+    Shortcut { sequence: "B"; enabled: win.idle; onActivated: backend.setBank((backend.bank + 1) % 4) }
+    Shortcut { sequence: "Shift+B"; enabled: win.idle; onActivated: backend.setBank((backend.bank + 3) % 4) }
+    Shortcut { sequence: "L"; enabled: win.idle; onActivated: win.showLanes(backend.selectedPad) }
+    Shortcut { sequence: "Shift+L"; enabled: win.idle; onActivated: lanePicker.openFor(backend.selectedPad) }
+    Shortcut { sequence: "Ctrl+M"; enabled: win.idle; onActivated: mixer.open() }
 
     // Patterns.
     Shortcut { sequence: "Ctrl+C"; enabled: win.idle; onActivated: backend.copyPattern() }
     Shortcut { sequence: "Ctrl+V"; enabled: win.idle; onActivated: backend.pastePattern() }
     Shortcut { sequence: "Ctrl+Delete"; enabled: win.idle; onActivated: backend.clearPattern() }
+    Shortcut { sequence: "Ctrl+B"; enabled: win.idle; onActivated: backend.cyclePatternLength() }
     Shortcut { sequence: "PgUp"; enabled: win.idle; onActivated: backend.selectPattern(Math.max(0, backend.editPattern - 1)) }
     Shortcut { sequence: "PgDown"; enabled: win.idle; onActivated: backend.selectPattern(Math.min(7, backend.editPattern + 1)) }
     Repeater {
@@ -161,7 +234,11 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Save]; enabled: win.idle; onActivated: backend.save() }
     Shortcut { sequences: ["Ctrl+Shift+S"]; enabled: win.idle; onActivated: backend.saveAs() }
     Shortcut { sequence: "Ctrl+E"; enabled: win.idle; onActivated: backend.exportAudio() }
-    Shortcut { sequence: "?"; enabled: !confirm.opened && !chop.opened && !chain.opened; onActivated: help.opened ? help.close() : help.open() }
+    Shortcut {
+        sequence: "?"
+        enabled: !confirm.opened && !chop.opened && !chain.opened && !mixer.opened && !lanePicker.opened
+        onActivated: help.opened ? help.close() : help.open()
+    }
     Shortcut { sequences: ["Ctrl+Q"]; enabled: win.idle; onActivated: win.close() }
     Shortcut {
         sequence: "Escape"
@@ -170,22 +247,39 @@ ApplicationWindow {
     }
 
     // The steps.
-    Shortcut { sequence: "Left"; enabled: win.idle && !win.songFocus; onActivated: win.cursorStep = (win.cursorStep + 15) % 16 }
-    Shortcut { sequence: "Right"; enabled: win.idle && !win.songFocus; onActivated: win.cursorStep = (win.cursorStep + 1) % 16 }
-    Shortcut { sequence: "Up"; enabled: win.idle && !win.songFocus; onActivated: backend.selectPad((backend.selectedPad + 15) % 16) }
-    Shortcut { sequence: "Down"; enabled: win.idle && !win.songFocus; onActivated: backend.selectPad((backend.selectedPad + 1) % 16) }
+    Shortcut { sequence: "Left"; enabled: win.idle && !win.songFocus; onActivated: win.moveStep(-1) }
+    Shortcut { sequence: "Right"; enabled: win.idle && !win.songFocus; onActivated: win.moveStep(1) }
+    Shortcut { sequence: "Ctrl+Left"; enabled: win.idle && !win.songFocus; onActivated: win.moveStep(-16) }
+    Shortcut { sequence: "Ctrl+Right"; enabled: win.idle && !win.songFocus; onActivated: win.moveStep(16) }
+    Shortcut { sequence: "Up"; enabled: win.idle && !win.songFocus; onActivated: win.moveRow(-1) }
+    Shortcut { sequence: "Down"; enabled: win.idle && !win.songFocus; onActivated: win.moveRow(1) }
     Shortcut {
         sequences: ["Return", "Enter"]
-        enabled: win.idle && !win.songFocus
+        enabled: win.idle && !win.songFocus && !win.onLane()
         onActivated: backend.toggleStep(backend.selectedPad, win.cursorStep)
     }
     Shortcut {
         sequences: ["Delete", "Backspace"]
         enabled: win.idle && !win.songFocus
-        onActivated: backend.clearStep(backend.selectedPad, win.cursorStep)
+        onActivated: win.onLane() ? backend.clearLanePoint(backend.selectedPad, win.laneAt(backend.selectedPad, win.cursorLane), win.cursorStep)
+                                  : backend.clearStep(backend.selectedPad, win.cursorStep)
     }
-    Shortcut { sequence: "Shift+Up"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(backend.selectedPad, win.cursorStep, 1) }
-    Shortcut { sequence: "Shift+Down"; enabled: win.idle && !win.songFocus; onActivated: backend.changeStep(backend.selectedPad, win.cursorStep, -1) }
+    Shortcut {
+        sequence: "Shift+Up"
+        enabled: win.idle && !win.songFocus
+        onActivated: win.onLane() ? backend.changeLanePoint(backend.selectedPad, win.laneAt(backend.selectedPad, win.cursorLane), win.cursorStep, 0.05)
+                                  : backend.changeStep(backend.selectedPad, win.cursorStep, 1)
+    }
+    Shortcut {
+        sequence: "Shift+Down"
+        enabled: win.idle && !win.songFocus
+        onActivated: win.onLane() ? backend.changeLanePoint(backend.selectedPad, win.laneAt(backend.selectedPad, win.cursorLane), win.cursorStep, -0.05)
+                                  : backend.changeStep(backend.selectedPad, win.cursorStep, -1)
+    }
+    Shortcut { sequence: "T"; enabled: win.idle && !win.songFocus; onActivated: backend.cycleRoll(backend.selectedPad, win.cursorStep) }
+    Shortcut { sequence: "Y"; enabled: win.idle && !win.songFocus; onActivated: backend.cycleChance(backend.selectedPad, win.cursorStep) }
+    Shortcut { sequence: "Alt+Left"; enabled: win.idle && !win.songFocus; onActivated: backend.nudgeStep(backend.selectedPad, win.cursorStep, -5) }
+    Shortcut { sequence: "Alt+Right"; enabled: win.idle && !win.songFocus; onActivated: backend.nudgeStep(backend.selectedPad, win.cursorStep, 5) }
 
     // The song.
     Shortcut { sequence: "Left"; enabled: win.idle && win.songFocus; onActivated: win.moveSongCursor(-1) }
@@ -225,7 +319,7 @@ ApplicationWindow {
                 return
             event.accepted = true
             if (!event.isAutoRepeat)
-                backend.padDown(pad, event.modifiers & Qt.ShiftModifier ? 4 : 3)
+                backend.padDown(backend.bank * 16 + pad, event.modifiers & Qt.ShiftModifier ? 4 : 3)
         }
         Keys.onReleased: (event) => {
             const pad = win.padFor(event)
@@ -233,7 +327,7 @@ ApplicationWindow {
                 return
             event.accepted = true
             if (!event.isAutoRepeat)
-                backend.padUp(pad)
+                backend.padUp(backend.bank * 16 + pad)
         }
 
         ColumnLayout {
@@ -329,6 +423,12 @@ ApplicationWindow {
                     bold: false
                     onClicked: chain.openFor(-1)
                 }
+                Chip {
+                    objectName: "mixerButton"
+                    text: qsTr("Mixer")
+                    bold: false
+                    onClicked: mixer.open()
+                }
 
                 // What Space plays: the pattern being edited, or the song.
                 Row {
@@ -417,6 +517,38 @@ ApplicationWindow {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                // How long the pattern is, and which of its bars is shown.
+                Chip {
+                    objectName: "patternLength"
+                    text: qsTr("%Ln bars", "", backend.patternLength / 16)
+                    bold: false
+                    onClicked: backend.cyclePatternLength()
+                }
+                Repeater {
+                    model: backend.patternLength / 16
+                    delegate: Chip {
+                        required property int index
+                        visible: backend.patternLength > 16
+                        objectName: "bar" + index
+                        implicitWidth: 32
+                        text: (index + 1).toLocaleString(Qt.locale(translator.language), 'f', 0)
+                        on: Math.floor(win.cursorStep / 16) === index
+                        onClicked: win.cursorStep = index * 16 + win.cursorStep % 16
+                        // The bar playing, when it isn't the one shown.
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 3
+                            width: 6
+                            height: 6
+                            radius: 3
+                            visible: backend.playing && backend.playPattern === backend.editPattern
+                                     && Math.floor(backend.playStep / 16) === parent.index && !parent.on
+                            color: theme.accent
+                        }
+                    }
+                }
             }
 
             RowLayout {
@@ -430,11 +562,20 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     cursorStep: win.cursorStep
+                    cursorLane: win.cursorLane
+                    expanded: win.expanded
                     active: !win.songFocus
                     onCellPicked: (pad, step) => {
                         win.songFocus = false
                         win.cursorStep = step
                     }
+                    onLanePicked: (pad, lane, step) => {
+                        win.songFocus = false
+                        win.cursorLane = lane
+                        win.cursorStep = step
+                    }
+                    onExpandToggled: (pad) => win.toggleExpanded(pad)
+                    onAddLaneRequested: (pad) => lanePicker.openFor(pad)
                 }
 
                 PadPanel {
@@ -448,6 +589,7 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignTop
                     onChopRequested: chop.open()
                     onEffectsRequested: chain.openFor(backend.selectedPad)
+                    onLanesRequested: win.showLanes(backend.selectedPad)
                 }
             }
 
@@ -537,14 +679,21 @@ ApplicationWindow {
                     { keys: "← → ↑ ↓", action: qsTr("Move between steps and pads") },
                     { keys: "Enter", action: qsTr("Turn a step on or off") },
                     { keys: "Delete", action: qsTr("Clear a step") },
-                    { keys: "Shift+↑ ↓", action: qsTr("A step louder or softer") },
+                    { keys: "Shift+↑ ↓", action: qsTr("A step louder or softer, or a lane up or down") },
                     { keys: "- =  _ +", action: qsTr("Tune the pad by a semitone or an octave") },
                     { keys: "Shift+← →", action: qsTr("Pad volume") },
                     { keys: "M  Shift+M", action: qsTr("Mute or solo the pad") },
-                    { keys: "U", action: qsTr("The pad's mute group") },
+                    { keys: "U", action: qsTr("The pad's choke group") },
                     { keys: "O  Shift+O", action: qsTr("Load a sample onto the pad, or go back to the kit") },
                     { keys: "K", action: qsTr("Chop a sample onto the pads") },
                     { keys: "J  Shift+J", action: qsTr("The pad's synth and effects, or the master's") },
+                    { keys: "B  Shift+B", action: qsTr("The next or the previous bank of pads") },
+                    { keys: "L  Shift+L", action: qsTr("Open the track to its lanes, or add one") },
+                    { keys: "T  Y", action: qsTr("A step's roll, and its chance") },
+                    { keys: "Alt+← →", action: qsTr("Nudge a step early or late") },
+                    { keys: "Ctrl+← →", action: qsTr("The bar before or after") },
+                    { keys: "Ctrl+B", action: qsTr("Make the pattern one to four bars") },
+                    { keys: "Ctrl+M", action: qsTr("The mixer") },
                     { keys: "Ctrl+1 – 8  PgUp PgDn", action: qsTr("Edit pattern A to H") },
                     { keys: "Ctrl+C  Ctrl+V", action: qsTr("Copy and paste a pattern") },
                     { keys: "Ctrl+Delete", action: qsTr("Clear the pattern") },
@@ -575,6 +724,32 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    Mixer {
+        id: mixer
+        objectName: "mixer"
+        rightToLeft: win.rightToLeft
+        onEffectsRequested: (pad) => {
+            mixer.close()
+            chain.openFor(pad)
+        }
+    }
+
+    LanePicker {
+        id: lanePicker
+        objectName: "lanePicker"
+        rightToLeft: win.rightToLeft
+        onPicked: (id) => {
+            backend.addLane(pad, id)
+            win.expand(pad)
+            backend.selectPad(pad)
+            // Onto the new lane.
+            const lanes = win.bankRow(pad).lanes
+            for (let i = 0; i < lanes.length; i++)
+                if (lanes[i].id === id)
+                    win.cursorLane = i
         }
     }
 

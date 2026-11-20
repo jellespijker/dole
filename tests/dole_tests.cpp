@@ -182,6 +182,7 @@ public:
     void stop() override { calls << "stop"; }
     void hit(int pad, int level) override { calls << QString("hit %1 %2").arg(pad).arg(level); }
     void hold(int pad, bool held, int) override { calls << QString("hold %1 %2").arg(pad).arg(held); }
+    void release(int pad) override { calls << QString("release %1").arg(pad); }
     void setRepeat(int division) override { calls << QString("repeat %1").arg(division); }
     void suppress(int pad, int pattern, int step) override {
         calls << QString("suppress %1 %2 %3").arg(pad).arg(pattern).arg(step);
@@ -588,7 +589,7 @@ private slots:
         QTest::newRow("not dole") << QByteArray(R"({"bpm": 90})") << "Not a dole song";
         QTest::newRow("tempo") << QByteArray(R"({"dole": 2, "bpm": 400})") << "\"bpm\" should be between";
         QTest::newRow("grit") << QByteArray(R"({"dole": 2, "grit": "lofi"})") << "\"grit\" is";
-        QTest::newRow("pad") << QByteArray(R"({"dole": 2, "patterns": {"A": {"17": "x..............."}}})")
+        QTest::newRow("pad") << QByteArray(R"({"dole": 2, "patterns": {"A": {"65": "x..............."}}})")
                              << "unknown pad";
         QTest::newRow("length") << QByteArray(R"({"dole": 2, "patterns": {"A": {"1": "x...x...x...x"}}})")
                                 << "needs 16 steps, has 13";
@@ -612,12 +613,13 @@ private slots:
     // The sound.
 
     void theKitHasSixteenSounds() {
-        for (int p = 0; p < kPads; ++p) {
+        for (int p = 0; p < kBankPads; ++p) {
             const SampleBuffer sound = kitSound(p);
             QVERIFY2(sound && sound->size() > 1000, qPrintable(kitIds()[p]));
             QVERIFY(peak(*sound, 0, sound->size() / 2) > 0.5f);
         }
-        QVERIFY(!kitSound(kPads));
+        // Banks B to D start empty, for the user's own sounds.
+        QVERIFY(!kitSound(kBankPads));
     }
 
     void slicesCutCleanly() {
@@ -671,6 +673,241 @@ private slots:
         song.pads[4].solo = true;
         QVERIFY(song.audible(4));
         QVERIFY(!song.audible(5));
+    }
+
+    // At 120 BPM a step is 6000 frames, and a rim with no decay is over in
+    // well under one, so each hit can be told apart.
+    static Song shortRims(const QByteArray &row, const QByteArray &extra = {}) {
+        return songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0)" + extra + R"(}},
+                            "patterns": {"A": {"5": )" + row + "}}}");
+    }
+
+    void patternsRunUpToFourBarsAndTracksLoopOnTheirOwn() {
+        Song song = songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0}},
+            "patterns": {"A": {"length": 32, "5": "................x..............."}}})");
+        QCOMPARE(song.patterns[0].length, 32);
+        QVector<QPair<int, int>> steps;
+        const QVector<float> audio = renderBars(song, 2, &steps);
+        QVERIFY(qAbs(firstSound(audio) - 16 * 6000) < 50);
+        QCOMPARE(steps.size(), 32);
+        QCOMPARE(steps.last().second, 31);
+        QCOMPARE(songSteps(song, 0), 32);
+
+        // A three-step loop drifts against the bar: steps 0, 3, 6, ... 15, 18.
+        song = shortRims(R"("x...............")", R"(, "loop": 3)");
+        const QVector<float> looped = renderBars(song, 2);
+        for (int step : {3, 6, 15, 18})
+            QVERIFY2(peak(looped, step * 6000, step * 6000 + 2000) > 0.05f, qPrintable(QString::number(step)));
+        for (int step : {1, 2, 16, 17})
+            QVERIFY2(peak(looped, step * 6000 + 500, step * 6000 + 5500) < 0.01f, qPrintable(QString::number(step)));
+    }
+
+    void stepsRollTakeTheirChanceAndNudge() {
+        const QVector<float> once = renderBars(shortRims(R"("x...............")"), 1);
+        const QVector<float> rolled = renderBars(songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0}},
+            "patterns": {"A": {"5": {"steps": "x...............", "roll": {"1": 4}}}}})"), 1);
+        QVERIFY(peak(once, 3000, 3600) < 0.01f);
+        QVERIFY(peak(rolled, 3000, 3600) > 0.05f);
+
+        const QVector<float> never = renderBars(songFrom(R"({"dole": 3, "patterns": {"A":
+            {"5": {"steps": "x.x.x.x.x.x.x.x.", "chance": {"1": 0, "3": 0, "5": 0, "7": 0, "9": 0, "11": 0, "13": 0, "15": 0}}}}})"), 1);
+        QCOMPARE(peak(never, 0, 96000), 0.f);
+        // Half the time is the same half every time, so an export matches.
+        const QByteArray half = R"({"dole": 3, "patterns": {"A": {"5": {"steps": "xxxxxxxxxxxxxxxx",
+            "chance": {"1": 50, "2": 50, "3": 50, "4": 50, "5": 50, "6": 50, "7": 50, "8": 50}}}}})";
+        QCOMPARE(renderBars(songFrom(half), 1), renderBars(songFrom(half), 1));
+
+        const QVector<float> late = renderBars(songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0}},
+            "patterns": {"A": {"5": {"steps": "....x...........", "nudge": {"5": 50}}}}})"), 1);
+        QVERIFY(qAbs(firstSound(late) - (4 * 6000 + 3000)) < 50);
+        const QVector<float> early = renderBars(songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0}},
+            "patterns": {"A": {"5": {"steps": "....x...........", "nudge": {"5": -25}}}}})"), 1);
+        QVERIFY(qAbs(firstSound(early) - (4 * 6000 - 1500)) < 50);
+
+        // A track swings on its own: 75% puts the second step halfway late.
+        const QVector<float> swung = renderBars(shortRims(R"(".x..............")", R"(, "swing": 75)"), 1);
+        QVERIFY(qAbs(firstSound(swung) - 9000) < 50);
+    }
+
+    void tracksAreShapedAndPlaced() {
+        // Panned hard left, the right side is silent.
+        const QVector<float> left = renderBars(shortRims(R"("x...............")", R"(, "pan": -1)"), 1);
+        float right = 0, leftPeak = 0;
+        for (int i = 0; i < 6000; ++i) {
+            leftPeak = std::max(leftPeak, std::abs(left[2 * i]));
+            right = std::max(right, std::abs(left[2 * i + 1]));
+        }
+        QVERIFY(leftPeak > 0.1f);
+        QVERIFY(right < 1e-3f);
+
+        // A closed low-pass takes the crack out of a rim.
+        const float open = peak(renderBars(shortRims(R"("x...............")"), 1), 0, 6000);
+        const float closed = peak(renderBars(shortRims(R"("x...............")", R"(, "filter": -1)"), 1), 0, 6000);
+        QVERIFY2(closed < open / 4, qPrintable(QString("%1 %2").arg(closed).arg(open)));
+
+        // Decay shortens the bass; a gate cuts it after its length.
+        Song song = songFrom(R"({"dole": 3, "bpm": 120, "patterns": {"A": {"bass": "x..............."}}})");
+        const qsizetype full = lastSound(renderBars(song, 1));
+        song.pads[14].decay = 0.3;
+        const qsizetype decayed = lastSound(renderBars(song, 1));
+        song.pads[14].decay = 1;
+        song.pads[14].gate = true;
+        const qsizetype gated = lastSound(renderBars(song, 1));
+        QVERIFY2(decayed < full / 2, qPrintable(QString("%1 %2").arg(decayed).arg(full)));
+        QVERIFY2(qAbs(gated - 6000) < 600, qPrintable(QString::number(gated)));
+
+        // Reversed, it swells instead of striking; with attack, it fades in.
+        song.pads[14].gate = false;
+        const float strike = peak(renderBars(song, 1), 0, 1000);
+        song.pads[14].reverse = true;
+        QVERIFY(peak(renderBars(song, 1), 0, 1000) < strike / 4);
+        song.pads[14].reverse = false;
+        song.pads[14].attack = 1;
+        QVERIFY(peak(renderBars(song, 1), 0, 1000) < strike / 4);
+    }
+
+    void lanesMoveATrackAsItPlays() {
+        // The volume lane silences the second hit from its step on.
+        const QVector<float> ducked = renderBars(songFrom(R"({"dole": 3, "bpm": 120, "pads": {"5": {"decay": 0}},
+            "patterns": {"A": {"5": {"steps": "x...x...x.......", "lanes": {"volume": {"5": 0, "9": 0.8}}}}}})"), 1);
+        QVERIFY(peak(ducked, 0, 2000) > 0.05f);
+        QVERIFY(peak(ducked, 4 * 6000, 5 * 6000) < 1e-3f);
+        QVERIFY(peak(ducked, 8 * 6000, 9 * 6000) > 0.05f);
+
+        // A pitch lane an octave up makes the bass twice as quick.
+        Song song = songFrom(R"({"dole": 3, "bpm": 60, "patterns": {"A": {"bass": "x..............."}}})");
+        const qsizetype normal = lastSound(renderBars(song, 1));
+        song.patterns[0].lanes[14]["pitch"][0] = 12;
+        const qsizetype up = lastSound(renderBars(song, 1));
+        QVERIFY2(qAbs(up * 2 - normal) < kRate / 10, qPrintable(QString("%1 %2").arg(up).arg(normal)));
+
+        // A plugin's lane sets its parameter on the step, and stopping puts
+        // the song's setting back.
+        song = songFrom(R"({"dole": 3, "pads": {"5": {"effects": [{"plugin": "overdrive", "params": {"drive": 0.2}}]}},
+            "patterns": {"A": {"5": {"steps": "x...............", "lanes": {"fx1.drive": {"1": 0.9}}}}}})");
+        QStringList problems;
+        const Rack rack = buildRack(song, &problems);
+        Renderer renderer;
+        renderer.setSong(song);
+        renderer.setSounds(kit());
+        renderer.setRack(rack);
+        renderer.play(false, 0, 0);
+        QVector<float> out(2 * 4000);
+        renderer.render(out.data(), 4000);
+        auto drive = [&] {
+            for (const Parameter &p : rack.effects[4][0].processor->parameters())
+                if (p.id == "drive")
+                    return p.value;
+            return -1.0;
+        };
+        QCOMPARE(drive(), 0.9);
+        renderer.stop();
+        QCOMPARE(drive(), 0.2);
+    }
+
+    void songFilesKeepEverything() {
+        Song song = songFrom(R"({"dole": 3, "pads": {
+                "B3": {"sample": "/tmp/x.wav", "pan": -0.5, "filter": 0.25, "resonance": 0.5, "attack": 0.1,
+                       "decay": 0.4, "reverse": true, "gate": true, "swing": 66, "loop": 12, "length": 4}},
+            "patterns": {"C": {"length": 48, "B3": {"steps": "x...............x...............x...............",
+                "roll": {"1": 3}, "chance": {"17": 50}, "nudge": {"33": -10},
+                "lanes": {"pitch": {"1": -5, "17": 7}, "filter": {"9": -0.75}}}}}})");
+        const Pad &pad = song.pads[18];
+        QCOMPARE(pad.pan, -0.5);
+        QVERIFY(pad.reverse && pad.gate);
+        QCOMPARE(pad.loop, 12);
+        QCOMPARE(song.patterns[2].length, 48);
+        QCOMPARE(song.patterns[2].steps[18][0].roll, 3);
+        QCOMPARE(song.patterns[2].steps[18][16].chance, 50);
+        QCOMPARE(song.patterns[2].steps[18][32].nudge, -10);
+        QCOMPARE(laneValue(song.patterns[2].lanes[18]["pitch"], 10), -5.0);
+        QCOMPARE(laneValue(song.patterns[2].lanes[18]["pitch"], 20), 7.0);
+        QVERIFY(std::isnan(laneValue(song.patterns[2].lanes[18]["filter"], 3)));
+
+        Song back;
+        QString error;
+        QVERIFY2(songFromJson(songToJson(song, {}), {}, &back, &error), qPrintable(error));
+        QVERIFY(back == song);
+        // The demo still reads as it did, and an old song still opens.
+        QVERIFY(songFromJson(songToJson(demoSong(), {}), {}, &back, &error));
+        QVERIFY(back == demoSong());
+
+        QVERIFY(!songFromJson(QJsonDocument::fromJson(R"({"dole": 3, "patterns": {"A": {"1": {"steps": "x...............",
+            "lanes": {"wobble": {"1": 1}}}}}})").object(), {}, &back, &error));
+        QVERIFY(error.contains("\"wobble\" isn't a lane"));
+    }
+
+    void banksStepsAndLanesFromTheWindow() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.newSong();
+        backend.setBank(1);
+        QCOMPARE(backend.bank(), 1);
+        QCOMPARE(backend.selectedPad(), 16);
+        QCOMPARE(backend.grid().size(), 16);
+        QCOMPARE(backend.pads()[16].toMap().value("state").toString(), QString("empty"));
+        QCOMPARE(backend.pads()[16].toMap().value("name").toString(), QString("B1"));
+        // Choosing a pad in another bank shows that bank.
+        backend.selectPad(40);
+        QCOMPARE(backend.bank(), 2);
+        backend.selectPad(16);
+
+        backend.toggleStep(16, 2);
+        backend.cycleRoll(16, 2);
+        backend.cycleChance(16, 2);
+        backend.nudgeStep(16, 2, 10);
+        const QVariantMap row = backend.grid()[0].toMap();
+        QCOMPARE(row.value("roll").toList()[2].toInt(), 2);
+        QCOMPARE(row.value("chance").toList()[2].toInt(), 75);
+        QCOMPARE(row.value("nudge").toList()[2].toInt(), 10);
+
+        backend.cyclePatternLength();
+        QCOMPARE(backend.patternLength(), 32);
+        QCOMPARE(backend.grid()[0].toMap().value("steps").toList().size(), 32);
+
+        backend.addLane(16, "filter");
+        backend.setLanePoint(16, "filter", 4, -0.5);
+        backend.setLanePoint(16, "filter", 5, -9); // held to its range
+        QVariantMap lane = backend.grid()[0].toMap().value("lanes").toList()[0].toMap();
+        QCOMPARE(lane.value("id").toString(), QString("filter"));
+        QCOMPARE(lane.value("values").toList()[0].toDouble(), 0.0);
+        QCOMPARE(lane.value("values").toList()[4].toDouble(), -0.5);
+        QCOMPARE(lane.value("values").toList()[5].toDouble(), -1.0);
+        QVERIFY(lane.value("values").toList()[6].isNull());
+        backend.clearLanePoint(16, "filter", 5);
+        backend.addLane(16, "pitch");
+        backend.changeLanePoint(16, "pitch", 3, 0.01); // a semitone, however small the nudge
+        QCOMPARE(backend.song().patterns[0].lanes[16]["pitch"][3], 1.0);
+
+        // An effect's lane follows it when it moves, and goes with it.
+        backend.addEffect(16, "overdrive");
+        backend.addEffect(16, "bitcrush");
+        QVERIFY(backend.laneChoices(16).size() > 6);
+        backend.addLane(16, "fx2.bits");
+        backend.moveEffect(16, 1, -1);
+        QVERIFY(backend.song().patterns[0].lanes[16].contains("fx1.bits"));
+        backend.removeEffect(16, 0);
+        QVERIFY(!backend.song().patterns[0].lanes[16].contains("fx1.bits"));
+        backend.removeLane(16, "pitch");
+        backend.removeLane(16, "filter");
+        QVERIFY(!backend.song().patterns[0].lanes.contains(16));
+
+        backend.setPadSetting(16, "pan", -2);
+        backend.toggleReverse(16);
+        backend.toggleGate(16);
+        backend.changePadSwing(16, 4);
+        backend.changeLoop(16, -20);
+        const QVariantMap pad = backend.pads()[16].toMap();
+        QCOMPARE(pad.value("pan").toDouble(), -1.0);
+        QVERIFY(pad.value("reverse").toBool() && pad.value("gate").toBool());
+        QCOMPARE(pad.value("swing").toInt(), 54);
+        QCOMPARE(pad.value("loop").toInt(), 12);
+        backend.changeLoop(16, 20);
+        QCOMPARE(backend.pads()[16].toMap().value("loop").toInt(), 0); // back to the pattern's
+
+        backend.padUp(16);
+        QVERIFY(engine.calls.contains("release 16"));
     }
 
     void muteGroupsCutEachOtherOff() {
@@ -848,7 +1085,7 @@ private slots:
         QVERIFY(engine.song.patterns[0].steps[4][3].on());
         QCOMPARE(engine.calls.last(), QString("hit 4 3"));
         QCOMPARE(backend.selectedPad(), 4);
-        QCOMPARE(backend.grid()[4].toList()[3].toInt(), 3);
+        QCOMPARE(backend.grid()[4].toMap().value("steps").toList()[3].toInt(), 3);
         backend.undo();
         QVERIFY(!backend.dirty());
         backend.redo();
@@ -1302,7 +1539,8 @@ private slots:
         QCOMPARE(engine.calls.last(), QString("hit 0 3"));
         QTest::keyRelease(window, Qt::Key_Z);
         QTest::keyClick(window, Qt::Key_4, Qt::ShiftModifier);
-        QCOMPARE(engine.calls.last(), QString("hit 15 4"));
+        QVERIFY(engine.calls.contains("hit 15 4"));
+        QCOMPARE(engine.calls.last(), QString("release 15")); // a gated pad would stop here
         QCOMPARE(backend.selectedPad(), 15);
 
         // Note repeat holds a pad while its key is down.
@@ -1385,6 +1623,72 @@ private slots:
         QTRY_VERIFY(help->property("opened").toBool());
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!help->property("visible").toBool());
+
+        // A step's roll, chance, and nudge, from the keys and the step bar.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::keyClick(window, Qt::Key_1, Qt::ControlModifier);
+        backend.selectPad(4);
+        for (int i = 0; i < 7; ++i) // from step 10, clicked last, back to step 3
+            QTest::keyClick(window, Qt::Key_Left);
+        QTest::keyClick(window, Qt::Key_T);
+        QCOMPARE(backend.song().patterns[0].steps[4][2].roll, 2);
+        QTest::keyClick(window, Qt::Key_Y);
+        QCOMPARE(backend.song().patterns[0].steps[4][2].chance, 75);
+        QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+        QCOMPARE(backend.song().patterns[0].steps[4][2].nudge, 5);
+        QCOMPARE(findItem(window->contentItem(), "nudge")->property("text").toString(), QString("+5%"));
+
+        // Two bars: the cursor goes on into the second, and the grid shows it.
+        QTest::keyClick(window, Qt::Key_B, Qt::ControlModifier);
+        QCOMPARE(backend.patternLength(), 32);
+        QTest::keyClick(window, Qt::Key_Right, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Return);
+        QVERIFY(backend.song().patterns[0].steps[4][18].on());
+        QVERIFY(findItem(window->contentItem(), "cell4_18"));
+        QCOMPARE(findItem(window->contentItem(), "barLabel")->property("text").toString(), QString("Bar 2 of 2"));
+
+        // L on a track with no lanes asks which to add; then the lane opens
+        // under the track, and the cursor is on it.
+        auto *lanes = window->findChild<QObject *>("lanePicker");
+        QTest::keyClick(window, Qt::Key_L);
+        QTRY_VERIFY(lanes->property("opened").toBool());
+        for (char c : QByteArray("filt"))
+            QTest::keyClick(window, c);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!lanes->property("visible").toBool());
+        QVERIFY(backend.song().patterns[0].lanes[4].contains("filter"));
+        QVERIFY(findItem(window->contentItem(), "lane4_filter"));
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QCOMPARE(backend.song().patterns[0].lanes[4]["filter"][18], -0.1);
+        QTest::keyClick(window, Qt::Key_Delete);
+        QVERIFY(!backend.song().patterns[0].lanes[4]["filter"].contains(18));
+        QVERIFY(backend.song().patterns[0].steps[4][18].on()); // the step is still there
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(backend.selectedPad(), 5);
+
+        // B goes to the next bank: the same keys play its pads.
+        QTest::keyClick(window, Qt::Key_B);
+        QCOMPARE(backend.bank(), 1);
+        QTest::keyPress(window, Qt::Key_Z);
+        QVERIFY(engine.calls.contains("hit 16 3"));
+        QTest::keyRelease(window, Qt::Key_Z);
+        QVERIFY(findItem(window->contentItem(), "pad16"));
+        QTest::keyClick(window, Qt::Key_B, Qt::ShiftModifier);
+        QCOMPARE(backend.bank(), 0);
+
+        // The mixer: a fader and a meter for every track of the bank.
+        auto *mixer = window->findChild<QObject *>("mixer");
+        QTest::keyClick(window, Qt::Key_M, Qt::ControlModifier);
+        QTRY_VERIFY(mixer->property("opened").toBool());
+        // A popup's content hangs off the window's overlay, inside its content item.
+        QQuickItem *fader = findItem(window->contentItem(), "fader15");
+        QVERIFY(fader);
+        QVERIFY(findItem(window->contentItem(), "meter15"));
+        QMetaObject::invokeMethod(fader, "increase");
+        QMetaObject::invokeMethod(fader, "moved");
+        QVERIFY(backend.song().pads[15].volume > 0.8);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!mixer->property("visible").toBool());
 
         // K opens the chop view, which asks for a loop; Escape closes it.
         auto *chop = window->findChild<QObject *>("chop");
