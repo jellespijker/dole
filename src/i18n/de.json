@@ -12,6 +12,10 @@
     "one": "%Ln Chop",
     "other": "%Ln Chops"
   },
+  "%Ln effects": {
+    "one": "%Ln Effekt",
+    "other": "%Ln Effekte"
+  },
   "%Ln steps": {
     "one": "%Ln Schritt",
     "other": "%Ln Schritte"
@@ -107,6 +111,7 @@
   "Install CLAP or LV2 effects, such as lsp-plugins or guitarix, and they show up here too.": "Installiere CLAP- oder LV2-Effekte wie lsp-plugins oder guitarix, dann erscheinen sie auch hier.",
   "Kit": "Kit",
   "Knock": "Knock",
+  "L lanes · T roll · Y chance": "L Spuren · T Wirbel · Y Chance",
   "Lanes": "Spuren",
   "Left %1": "Links %1",
   "Length": "Länge",
@@ -129,6 +134,7 @@
   "Mix": "Mix",
   "Mixer": "Mischpult",
   "Move between steps and pads": "Zwischen Schritten und Pads wechseln",
+  "Mute": "Stumm",
   "Mute or solo the pad": "Das Pad stumm oder solo schalten",
   "New or open a song": "Neuer Song oder Song öffnen",
   "No choke": "Kein Abwürgen",
@@ -187,16 +193,16 @@
   "Shape": "Form",
   "Show or hide the shortcuts": "Tastenkürzel zeigen oder verbergen",
   "Slice": "Schneiden",
+  "Solo": "Solo",
   "Song": "Song",
   "Stab": "Stab",
   "Step %1": "Schritt %1",
   "Stop": "Stopp",
   "Stutter": "Stutter",
-  "swing": "Swing",
   "Swing": "Swing",
+  "swing": "Swing",
   "Switch between the steps and the song": "Zwischen den Schritten und dem Song wechseln",
   "Synth": "Synth",
-  "Tab to edit": "Tab zum Bearbeiten",
   "Tempo down or up, by 1 or 10": "Tempo runter oder rauf, um 1 oder 10",
   "The bar before or after": "Den Takt davor oder danach",
   "The file chooser didn't open: %1": "Die Dateiauswahl ging nicht auf: %1",

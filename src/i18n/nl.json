@@ -12,6 +12,10 @@
     "one": "%Ln chop",
     "other": "%Ln chops"
   },
+  "%Ln effects": {
+    "one": "%Ln effect",
+    "other": "%Ln effecten"
+  },
   "%Ln steps": {
     "one": "%Ln stap",
     "other": "%Ln stappen"
@@ -107,6 +111,7 @@
   "Install CLAP or LV2 effects, such as lsp-plugins or guitarix, and they show up here too.": "Installeer CLAP- of LV2-effecten, zoals lsp-plugins of guitarix, en ze verschijnen hier ook.",
   "Kit": "Kit",
   "Knock": "Knock",
+  "L lanes · T roll · Y chance": "L banen · T roffel · Y kans",
   "Lanes": "Banen",
   "Left %1": "Links %1",
   "Length": "Lengte",
@@ -129,6 +134,7 @@
   "Mix": "Mix",
   "Mixer": "Mixer",
   "Move between steps and pads": "Tussen stappen en pads bewegen",
+  "Mute": "Stil",
   "Mute or solo the pad": "De pad dempen of solo zetten",
   "New or open a song": "Nieuw of een nummer openen",
   "No choke": "Niet afknijpen",
@@ -187,16 +193,16 @@
   "Shape": "Vorm",
   "Show or hide the shortcuts": "De sneltoetsen tonen of verbergen",
   "Slice": "Snijden",
+  "Solo": "Solo",
   "Song": "Nummer",
   "Stab": "Stab",
   "Step %1": "Stap %1",
   "Stop": "Stop",
   "Stutter": "Stutter",
-  "swing": "swing",
   "Swing": "Swing",
+  "swing": "swing",
   "Switch between the steps and the song": "Wisselen tussen de stappen en het nummer",
   "Synth": "Synth",
-  "Tab to edit": "Tab om te bewerken",
   "Tempo down or up, by 1 or 10": "Tempo omlaag of omhoog, met 1 of 10",
   "The bar before or after": "De maat ervoor of erna",
   "The file chooser didn't open: %1": "De bestandskiezer ging niet open: %1",

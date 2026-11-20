@@ -2,6 +2,7 @@
 #include "theme.h"
 
 #include <QDir>
+#include <QFontDatabase>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -46,6 +47,7 @@ double luminance(const QColor &c) {
 Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl, const QString &hyprlandEvents)
     : QObject(parent),
       m_directory(directory.isEmpty() ? QDir::homePath() + "/.local/state/omarchy/current" : directory) {
+    loadFonts();
     m_debounce.setSingleShot(true);
     m_debounce.setInterval(80);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_debounce.start(); });
@@ -211,4 +213,31 @@ void Theme::reload() {
         m_light = light;
         emit changed();
     }
+}
+
+QColor Theme::quiet() const {
+    const QColor f = foreground(), b = background();
+    const double k = 0.62;
+    return QColor::fromRgbF(f.redF() * k + b.redF() * (1 - k), f.greenF() * k + b.greenF() * (1 - k),
+                            f.blueF() * k + b.blueF() * (1 - k));
+}
+
+// The faces are compiled in, so dole looks the same on every machine. They
+// are added to the font database once, before any window is drawn.
+static QString loadFont(const QStringList &files, const QString &fallback) {
+    QString family;
+    for (const QString &file : files) {
+        const int id = QFontDatabase::addApplicationFont(file);
+        if (id >= 0 && family.isEmpty())
+            family = QFontDatabase::applicationFontFamilies(id).value(0);
+    }
+    return family.isEmpty() ? fallback : family;
+}
+
+void Theme::loadFonts() {
+    static const QString display = loadFont({":/fonts/Anton-Regular.ttf"}, "sans-serif");
+    static const QString type =
+        loadFont({":/fonts/CourierPrime-Regular.ttf", ":/fonts/CourierPrime-Bold.ttf"}, "monospace");
+    m_displayFont = display;
+    m_typeFont = type;
 }

@@ -25,7 +25,8 @@ Popup {
     closePolicy: Popup.CloseOnEscape
     background: Rectangle {
         color: theme.background
-        border.color: theme.colors.selection
+        border.width: 3
+        border.color: theme.foreground
         radius: theme.radius
     }
 

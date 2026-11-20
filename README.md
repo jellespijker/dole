@@ -156,5 +156,7 @@ cmake --install build --prefix ~/.local  # add it to the app launcher
 ## License
 
 MIT. The CLAP headers in `third_party/clap` are MIT, by Alexandre Bique and
-the CLAP authors. The theme, translator, file picker, command line, and dialog buttons
+the CLAP authors. The faces compiled into the window, Anton (by Vernon Adams)
+and Courier Prime (by Alan Dague-Greene), are under the SIL Open Font License;
+their licenses are in `src/fonts`. The theme, translator, file picker, command line, and dialog buttons
 follow Omacut, Hype, and the other Omarchy apps by David Heinemeier Hansson.

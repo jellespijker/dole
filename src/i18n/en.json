@@ -12,6 +12,10 @@
     "one": "%Ln chop",
     "other": "%Ln chops"
   },
+  "%Ln effects": {
+    "one": "%Ln effect",
+    "other": "%Ln effects"
+  },
   "%Ln steps": {
     "one": "%Ln step",
     "other": "%Ln steps"
@@ -107,6 +111,7 @@
   "Install CLAP or LV2 effects, such as lsp-plugins or guitarix, and they show up here too.": "Install CLAP or LV2 effects, such as lsp-plugins or guitarix, and they show up here too.",
   "Kit": "Kit",
   "Knock": "Knock",
+  "L lanes · T roll · Y chance": "L lanes · T roll · Y chance",
   "Lanes": "Lanes",
   "Left %1": "Left %1",
   "Length": "Length",
@@ -129,6 +134,7 @@
   "Mix": "Mix",
   "Mixer": "Mixer",
   "Move between steps and pads": "Move between steps and pads",
+  "Mute": "Mute",
   "Mute or solo the pad": "Mute or solo the pad",
   "New or open a song": "New or open a song",
   "No choke": "No choke",
@@ -187,16 +193,16 @@
   "Shape": "Shape",
   "Show or hide the shortcuts": "Show or hide the shortcuts",
   "Slice": "Slice",
+  "Solo": "Solo",
   "Song": "Song",
   "Stab": "Stab",
   "Step %1": "Step %1",
   "Stop": "Stop",
   "Stutter": "Stutter",
-  "swing": "swing",
   "Swing": "Swing",
+  "swing": "swing",
   "Switch between the steps and the song": "Switch between the steps and the song",
   "Synth": "Synth",
-  "Tab to edit": "Tab to edit",
   "Tempo down or up, by 1 or 10": "Tempo down or up, by 1 or 10",
   "The bar before or after": "The bar before or after",
   "The file chooser didn't open: %1": "The file chooser didn't open: %1",

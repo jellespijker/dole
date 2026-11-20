@@ -25,6 +25,7 @@ class Backend : public QObject {
     Q_PROPERTY(bool vinyl READ vinyl NOTIFY songChanged)
     Q_PROPERTY(QVariantList chain READ chain NOTIFY songChanged)
     Q_PROPERTY(QVariantList usedPatterns READ usedPatterns NOTIFY songChanged)
+    Q_PROPERTY(QVariantList patternLengths READ patternLengths NOTIFY songChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY songChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY songChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY songChanged)
@@ -65,6 +66,7 @@ public:
     bool vinyl() const { return m_song.vinyl; }
     QVariantList chain() const;
     QVariantList usedPatterns() const;
+    QVariantList patternLengths() const;
     bool dirty() const { return m_song != m_saved; }
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }

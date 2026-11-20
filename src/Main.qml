@@ -13,11 +13,23 @@ ApplicationWindow {
     visible: true
     title: (backend.fileName || qsTr("Untitled")) + (backend.dirty ? " •" : "") + " — Dole"
     color: theme.background
+    font.family: theme.typeFont
+    font.pixelSize: 14
 
     Material.theme: theme.light ? Material.Light : Material.Dark
     Material.accent: theme.accent
     Material.background: theme.background
     Material.foreground: theme.foreground
+
+    // The heavy rule the sheet is divided by.
+    component Rule: Rectangle {
+        property bool vertical: false
+        Layout.fillWidth: !vertical
+        Layout.fillHeight: vertical
+        implicitWidth: 3
+        implicitHeight: 3
+        color: theme.foreground
+    }
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
@@ -31,6 +43,11 @@ ApplicationWindow {
     property bool songFocus: false
     property int songCursor: 0
     property bool closing: false
+    // The header's height sets its type, so it comes from the window, never
+    // from the header's own size.
+    readonly property int headerHeight: height < 760 ? 76 : 92
+    // On a narrow window the transport keeps only its marks.
+    readonly property bool compact: width < 1240
 
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function patternName(p) { return String.fromCharCode(65 + p) }
@@ -330,316 +347,412 @@ ApplicationWindow {
                 backend.padUp(backend.bank * 16 + pad)
         }
 
+        // The flyer: the header's top line, the pads on their stock beside
+        // the pattern, and the song along the foot, ruled off heavily.
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 18
-            spacing: 12
+            spacing: 0
 
-            // Transport: play, record, tempo, swing, and the sound's grit.
+            // Transport: play, record, tempo as the headline, and the sound's grit.
             RowLayout {
+                id: header
                 Layout.fillWidth: true
-                spacing: 10
+                Layout.preferredHeight: win.headerHeight
+                Layout.maximumHeight: win.headerHeight
+                spacing: 0
 
-                Chip {
-                    objectName: "play"
-                    text: backend.playing ? "■  " + qsTr("Stop") : "▶  " + qsTr("Play")
-                    on: backend.playing
-                    implicitHeight: 36
-                    onClicked: backend.togglePlay(win.chainStart())
+                // As wide as the pads below it, or what the transport leaves.
+                Item {
+                    Layout.preferredWidth: Math.max(150, Math.min(pads.width, win.width - transport.implicitWidth - 40
+                                                                  - tempo.implicitWidth - 36 - effects.implicitWidth - 22 - 9))
+                    Layout.fillHeight: true
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 22
+                        anchors.rightMargin: 16
+                        spacing: 16
+                        Label {
+                            text: "dole"
+                            font.family: theme.displayFont
+                            font.pixelSize: win.headerHeight * 0.66
+                            font.capitalization: Font.AllUppercase
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Label {
+                                objectName: "fileName"
+                                Layout.fillWidth: true
+                                text: (backend.fileName || qsTr("Untitled")) + (backend.dirty ? " •" : "")
+                                elide: Text.ElideMiddle
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
+                            Label {
+                                objectName: "exporting"
+                                visible: backend.exporting
+                                text: qsTr("Exporting…")
+                                color: theme.accent
+                                font.pixelSize: 12
+                            }
+                        }
+                    }
                 }
-                Chip {
-                    objectName: "record"
-                    text: "●  " + qsTr("Rec")
-                    on: backend.recording
-                    onColor: theme.colors.red
-                    onTextColor: theme.background
-                    implicitHeight: 36
-                    onClicked: backend.toggleRecord(win.chainStart())
-                }
-                Chip {
-                    objectName: "repeat"
-                    text: qsTr("Repeat %1").arg(backend.repeatName)
-                    on: backend.repeat > 0
-                    bold: false
-                    implicitHeight: 36
-                    onClicked: backend.toggleRepeat()
-                    onPressAndHold: backend.cycleRepeat()
-                }
+                Rule { vertical: true }
 
-                Item { implicitWidth: 6 }
+                RowLayout {
+                    id: transport
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+                    spacing: 10
+                    Chip {
+                        objectName: "play"
+                        display: true
+                        implicitHeight: win.headerHeight * 0.6
+                        icon: backend.playing ? "stop" : "play"
+                        text: win.compact ? "" : backend.playing ? qsTr("Stop") : qsTr("Play")
+                        on: backend.playing
+                        onColor: theme.foreground
+                        onTextColor: theme.background
+                        onClicked: backend.togglePlay(win.chainStart())
+                    }
+                    Chip {
+                        objectName: "record"
+                        display: true
+                        implicitHeight: win.headerHeight * 0.6
+                        icon: "record"
+                        text: win.compact ? "" : qsTr("Rec")
+                        ink: theme.colors.red
+                        on: backend.recording
+                        onColor: theme.colors.red
+                        onTextColor: theme.background
+                        onClicked: backend.toggleRecord(win.chainStart())
+                    }
+                }
+                Rule { vertical: true }
 
-                Row {
-                    spacing: 5
+                // The tempo is the biggest thing on the sheet. The wheel over
+                // it turns it, or the swing with Shift.
+                RowLayout {
+                    id: tempo
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 16
+                    spacing: 10
                     Label {
                         objectName: "bpm"
                         text: backend.bpm.toLocaleString(Qt.locale(translator.language), 'f', 0)
-                        font.pixelSize: 24
-                        font.bold: true
-                        anchors.baseline: bpmUnit.baseline
-                    }
-                    Label {
-                        id: bpmUnit
-                        text: "BPM"
-                        color: theme.colors.muted
-                        topPadding: 9
-                    }
-                }
-                Row {
-                    spacing: 5
-                    Label {
-                        objectName: "swing"
-                        text: backend.swing.toLocaleString(Qt.locale(translator.language), 'f', 0) + "%"
-                        font.pixelSize: 24
-                        font.bold: true
-                        anchors.baseline: swingUnit.baseline
-                    }
-                    Label {
-                        id: swingUnit
-                        text: qsTr("swing")
-                        color: theme.colors.muted
-                        topPadding: 9
-                    }
-                }
-
-                Item { implicitWidth: 6 }
-
-                Chip {
-                    objectName: "grit"
-                    text: Names.grit(backend.grit)
-                    on: backend.grit > 0
-                    bold: false
-                    onClicked: backend.cycleGrit()
-                }
-                Chip {
-                    objectName: "vinyl"
-                    text: qsTr("Vinyl")
-                    on: backend.vinyl
-                    bold: false
-                    onClicked: backend.toggleVinyl()
-                }
-                Chip {
-                    objectName: "masterEffects"
-                    text: qsTr("Master FX")
-                    bold: false
-                    onClicked: chain.openFor(-1)
-                }
-                Chip {
-                    objectName: "mixerButton"
-                    text: qsTr("Mixer")
-                    bold: false
-                    onClicked: mixer.open()
-                }
-
-                // What Space plays: the pattern being edited, or the song.
-                Row {
-                    objectName: "mode"
-                    Repeater {
-                        model: [qsTr("Pattern"), qsTr("Song")]
-                        delegate: Rectangle {
-                            required property int index
-                            required property string modelData
-                            readonly property bool chosen: (index === 1) === backend.songMode
-                            implicitWidth: modeLabel.implicitWidth + 22
-                            implicitHeight: 32
-                            radius: Math.min(4, theme.radius)
-                            color: chosen ? theme.colors.selection : "transparent"
-                            border.color: theme.colors.selection
-                            Label {
-                                id: modeLabel
-                                anchors.centerIn: parent
-                                text: parent.modelData
-                                color: parent.chosen ? theme.foreground : theme.colors.muted
+                        font.family: theme.displayFont
+                        Layout.preferredHeight: win.headerHeight
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: win.headerHeight * 0.82
+                        topPadding: win.headerHeight * 0.1
+                        MouseArea {
+                            anchors.fill: parent
+                            onWheel: (wheel) => {
+                                const up = wheel.angleDelta.y > 0 ? 1 : -1
+                                if (wheel.modifiers & Qt.ShiftModifier)
+                                    backend.changeSwing(up)
+                                else
+                                    backend.changeBpm(up)
                             }
-                            TapHandler { onTapped: if (!parent.chosen) backend.toggleSongMode() }
                         }
                     }
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Label {
-                    objectName: "exporting"
-                    visible: backend.exporting
-                    text: qsTr("Exporting…")
-                    color: theme.colors.muted
-                }
-                Label {
-                    objectName: "fileName"
-                    Layout.maximumWidth: 220
-                    text: (backend.fileName || qsTr("Untitled")) + (backend.dirty ? " •" : "")
-                    elide: Text.ElideMiddle
-                    color: theme.colors.muted
-                }
-            }
-
-            // The patterns, A to H.
-            RowLayout {
-                spacing: 6
-
-                Label {
-                    text: qsTr("Pattern")
-                    font.bold: true
-                    color: win.songFocus ? theme.foreground : theme.accent
-                    Layout.rightMargin: 6
-                }
-
-                Repeater {
-                    model: 8
-                    delegate: Rectangle {
-                        required property int index
-                        readonly property bool chosen: backend.editPattern === index
-                        readonly property bool used: backend.usedPatterns[index]
-                        objectName: "pattern" + index
-                        implicitWidth: 36
-                        implicitHeight: 32
-                        radius: Math.min(4, theme.radius)
-                        color: chosen ? theme.accent : used ? win.alpha(theme.colors.selection, 0.9) : "transparent"
-                        border.color: chosen ? theme.accent : theme.colors.selection
+                    ColumnLayout {
+                        spacing: 0
                         Label {
-                            anchors.centerIn: parent
-                            text: win.patternName(parent.index)
-                            font.bold: true
-                            color: parent.chosen ? theme.accentForeground : parent.used ? theme.foreground : theme.colors.muted
+                            text: "BPM"
+                            font.pixelSize: 11
+                            font.letterSpacing: 0.9
+                            color: theme.quiet
                         }
-                        // The pattern playing, when it isn't the one shown.
-                        Rectangle {
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 3
-                            width: 6
-                            height: 6
-                            radius: 3
-                            visible: backend.playing && backend.playPattern === parent.index && !parent.chosen
-                            color: theme.accent
+                        Row {
+                            spacing: 5
+                            Label {
+                                objectName: "swing"
+                                text: backend.swing.toLocaleString(Qt.locale(translator.language), 'f', 0) + "%"
+                                font.bold: true
+                            }
+                            Label {
+                                text: qsTr("swing")
+                                font.bold: true
+                            }
                         }
-                        TapHandler { onTapped: backend.selectPattern(parent.index) }
                     }
                 }
+                Rule { vertical: true }
 
                 Item { Layout.fillWidth: true }
 
-                // How long the pattern is, and which of its bars is shown.
-                Chip {
-                    objectName: "patternLength"
-                    text: qsTr("%Ln bars", "", backend.patternLength / 16)
-                    bold: false
-                    onClicked: backend.cyclePatternLength()
-                }
-                Repeater {
-                    model: backend.patternLength / 16
-                    delegate: Chip {
-                        required property int index
-                        visible: backend.patternLength > 16
-                        objectName: "bar" + index
-                        implicitWidth: 32
-                        text: (index + 1).toLocaleString(Qt.locale(translator.language), 'f', 0)
-                        on: Math.floor(win.cursorStep / 16) === index
-                        onClicked: win.cursorStep = index * 16 + win.cursorStep % 16
-                        // The bar playing, when it isn't the one shown.
-                        Rectangle {
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: 3
-                            width: 6
-                            height: 6
-                            radius: 3
-                            visible: backend.playing && backend.playPattern === backend.editPattern
-                                     && Math.floor(backend.playStep / 16) === parent.index && !parent.on
-                            color: theme.accent
-                        }
+                RowLayout {
+                    id: effects
+                    Layout.rightMargin: 22
+                    spacing: 8
+                    Chip {
+                        objectName: "grit"
+                        text: Names.grit(backend.grit)
+                        on: backend.grit > 0
+                        onClicked: backend.cycleGrit()
+                    }
+                    Chip {
+                        objectName: "vinyl"
+                        text: qsTr("Vinyl")
+                        on: backend.vinyl
+                        onClicked: backend.toggleVinyl()
+                    }
+                    Chip {
+                        objectName: "masterEffects"
+                        text: qsTr("Master FX")
+                        onClicked: chain.openFor(-1)
+                    }
+                    Chip {
+                        objectName: "mixerButton"
+                        text: qsTr("Mixer")
+                        onClicked: mixer.open()
                     }
                 }
             }
+            Rule {}
 
             RowLayout {
+                id: body
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                spacing: 20
-
-                PatternGrid {
-                    id: grid
-                    objectName: "grid"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    cursorStep: win.cursorStep
-                    cursorLane: win.cursorLane
-                    expanded: win.expanded
-                    active: !win.songFocus
-                    onCellPicked: (pad, step) => {
-                        win.songFocus = false
-                        win.cursorStep = step
-                    }
-                    onLanePicked: (pad, lane, step) => {
-                        win.songFocus = false
-                        win.cursorLane = lane
-                        win.cursorStep = step
-                    }
-                    onExpandToggled: (pad) => win.toggleExpanded(pad)
-                    onAddLaneRequested: (pad) => lanePicker.openFor(pad)
-                }
+                spacing: 0
 
                 PadPanel {
                     id: pads
                     objectName: "pads"
                     // A layout in a layout fills by default.
                     Layout.fillWidth: false
-                    Layout.preferredWidth: Math.min(380, win.width * 0.3)
-                    Layout.maximumWidth: Layout.preferredWidth
+                    Layout.preferredWidth: Math.round(Math.max(340, Math.min(540, win.width * 0.36)))
                     Layout.fillHeight: true
-                    Layout.alignment: Qt.AlignTop
+                    padHeight: Math.max(52, Math.min((width - 70) / 4 * 0.86, (body.height * 0.66 - 82) / 4))
                     onChopRequested: chop.open()
                     onEffectsRequested: chain.openFor(backend.selectedPad)
                     onLanesRequested: win.showLanes(backend.selectedPad)
                 }
-            }
+                Rule { vertical: true }
 
-            SongStrip {
-                id: song
-                objectName: "song"
-                Layout.fillWidth: true
-                active: win.songFocus
-                cursor: win.songCursor
-                onSlotPicked: (index) => {
-                    win.songFocus = true
-                    win.songCursor = index
-                }
-            }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.leftMargin: 22
+                    Layout.rightMargin: 22
+                    spacing: 0
 
-            // What just happened, or went wrong.
-            Label {
-                id: status
-                objectName: "status"
-                Layout.fillWidth: true
-                readonly property string kind: backend.message.kind || ""
-                readonly property bool error: ["saveFailed", "openFailed", "sampleFailed", "noFfmpeg", "exportFailed",
-                                               "noDevice", "deviceFailed", "pickerFailed", "pluginFailed", "editorFailed",
-                                               "scanFailed", "chainFull"].indexOf(kind) >= 0
-                text: {
-                    const m = backend.message
-                    switch (kind) {
-                    case "saved": return qsTr("Saved %1").arg(m.arg)
-                    case "exported": return qsTr("Exported %1").arg(m.arg)
-                    case "copied": return qsTr("Copied pattern %1").arg(m.arg)
-                    case "pasted": return qsTr("Pasted into pattern %1").arg(m.arg)
-                    case "chopped": return qsTr("Chopped onto %1 pads from pad %2").arg(m.arg).arg(m.detail)
-                    case "saveFailed": return qsTr("Couldn't save %1: %2").arg(m.arg).arg(m.detail)
-                    case "openFailed": return qsTr("Couldn't open %1: %2").arg(m.arg).arg(m.detail)
-                    case "exportFailed": return qsTr("Couldn't export %1: %2").arg(m.arg).arg(m.detail)
-                    case "sampleFailed": return qsTr("Couldn't load the sample %1: %2").arg(m.arg).arg(m.detail)
-                    case "noFfmpeg": return qsTr("Loading samples needs ffmpeg, which isn't installed.")
-                    case "noDevice": return qsTr("There is no sound output to play through.")
-                    case "deviceFailed": return qsTr("The sound output stopped working.")
-                    case "pickerFailed": return qsTr("The file chooser didn't open: %1").arg(m.detail)
-                    case "pluginFailed": return qsTr("Couldn't load %1: %2").arg(m.arg).arg(m.detail)
-                    case "editorFailed": return qsTr("%1 couldn't open its window: %2").arg(m.arg).arg(m.detail)
-                    case "scanFailed": return qsTr("Looking for plugins failed: %1").arg(m.detail)
-                    case "chainFull": return qsTr("A chain holds %1 effects at most.").arg(m.arg)
+                    // The patterns, A to H, as tabs as wide as they are long.
+                    RowLayout {
+                        id: rail
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        clip: true
+                        Layout.preferredHeight: 56
+                        spacing: 4
+                        readonly property real room: width - railControls.width - 12 - 7 * spacing
+                        readonly property var lengths: backend.patternLengths
+                        function shown(p) { return backend.usedPatterns[p] || backend.editPattern === p }
+                        readonly property int emptyCount: {
+                            let n = 0
+                            for (let p = 0; p < 8; p++)
+                                if (!shown(p))
+                                    n++
+                            return n
+                        }
+                        readonly property int usedBars: {
+                            let n = 0
+                            for (let p = 0; p < 8; p++)
+                                if (shown(p))
+                                    n += lengths[p] / 16
+                            return n
+                        }
+                        readonly property int emptyWidth: width < 640 ? 34 : 44
+                        readonly property real unit: Math.max(40, Math.min(130, (room - emptyCount * emptyWidth) / Math.max(1, usedBars)))
+
+                        Repeater {
+                            model: 8
+                            delegate: Item {
+                                id: tab
+                                required property int index
+                                readonly property bool chosen: backend.editPattern === index
+                                readonly property bool used: rail.shown(index)
+                                readonly property int length: rail.lengths[index] || 16
+                                readonly property bool playing: backend.playing && backend.playPattern === index
+                                objectName: "pattern" + index
+                                Layout.alignment: Qt.AlignBottom
+                                implicitWidth: used ? Math.max(40, rail.unit * length / 16) : rail.emptyWidth
+                                implicitHeight: chosen ? 48 : used ? 40 : 32
+                                clip: true
+
+                                Rectangle {
+                                    visible: tab.used
+                                    anchors.fill: parent
+                                    anchors.bottomMargin: -3
+                                    color: tab.chosen ? theme.foreground : "transparent"
+                                    border.width: 2
+                                    border.color: theme.foreground
+                                }
+                                DashedBox {
+                                    visible: !tab.used
+                                    anchors.fill: parent
+                                    anchors.bottomMargin: -3
+                                    color: theme.quiet
+                                }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    Label {
+                                        Layout.fillWidth: !tab.used
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: win.patternName(tab.index)
+                                        font.family: theme.displayFont
+                                        font.pixelSize: tab.used ? 24 : 18
+                                        color: tab.chosen ? theme.background : tab.used ? theme.foreground : theme.quiet
+                                    }
+                                    Label {
+                                        visible: tab.used && tab.width > 96
+                                        Layout.fillWidth: true
+                                        horizontalAlignment: Text.AlignRight
+                                        text: qsTr("%Ln bars", "", tab.length / 16)
+                                        font.bold: true
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                        color: tab.chosen ? theme.background : theme.foreground
+                                    }
+                                }
+                                // The light bar crosses the tab of the pattern playing.
+                                Rectangle {
+                                    visible: tab.playing
+                                    x: (tab.width - width) * backend.playStep / tab.length
+                                    width: 4
+                                    height: parent.height
+                                    color: tab.chosen ? theme.accent : theme.foreground
+                                }
+                                TapHandler { onTapped: backend.selectPattern(tab.index) }
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // How long the pattern is, and which of its bars is shown.
+                        Row {
+                            id: railControls
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 6
+                            Chip {
+                                objectName: "patternLength"
+                                text: qsTr("%Ln bars", "", backend.patternLength / 16)
+                                onClicked: backend.cyclePatternLength()
+                            }
+                            Repeater {
+                                model: backend.patternLength / 16
+                                delegate: Chip {
+                                    required property int index
+                                    visible: backend.patternLength > 16
+                                    objectName: "bar" + index
+                                    implicitWidth: 36
+                                    text: (index + 1).toLocaleString(Qt.locale(translator.language), 'f', 0)
+                                    on: Math.floor(win.cursorStep / 16) === index
+                                    onClicked: win.cursorStep = index * 16 + win.cursorStep % 16
+                                    // The bar playing, when it isn't the one shown.
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        anchors.bottomMargin: 4
+                                        width: parent.width - 16
+                                        height: 3
+                                        visible: backend.playing && backend.playPattern === backend.editPattern
+                                                 && Math.floor(backend.playStep / 16) === parent.index && !parent.on
+                                        color: theme.foreground
+                                    }
+                                }
+                            }
+                        }
                     }
-                    return backend.recording ? qsTr("Recording: play the pads, they land on the nearest step")
-                                             : qsTr("Play the pads with 1–4, Q–R, A–F, Z–V. Press ? for the shortcuts")
+                    Rule {}
+
+                    PatternGrid {
+                        id: grid
+                        objectName: "grid"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        cursorStep: win.cursorStep
+                        cursorLane: win.cursorLane
+                        expanded: win.expanded
+                        active: !win.songFocus
+                        onCellPicked: (pad, step) => {
+                            win.songFocus = false
+                            win.cursorStep = step
+                        }
+                        onLanePicked: (pad, lane, step) => {
+                            win.songFocus = false
+                            win.cursorLane = lane
+                            win.cursorStep = step
+                        }
+                        onExpandToggled: (pad) => win.toggleExpanded(pad)
+                        onAddLaneRequested: (pad) => lanePicker.openFor(pad)
+                    }
                 }
-                color: error || backend.recording ? theme.colors.red : theme.colors.muted
-                elide: Text.ElideRight
+            }
+            Rule {}
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 66
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
+                spacing: 18
+
+                SongStrip {
+                    id: song
+                    objectName: "song"
+                    Layout.preferredWidth: Math.min(implicitWidth, (win.width - 44) * 0.6)
+                    active: win.songFocus
+                    cursor: win.songCursor
+                    onSlotPicked: (index) => {
+                        win.songFocus = true
+                        win.songCursor = index
+                    }
+                }
+
+                // What just happened, or went wrong.
+                Label {
+                    id: status
+                    objectName: "status"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    readonly property string kind: backend.message.kind || ""
+                    readonly property bool error: ["saveFailed", "openFailed", "sampleFailed", "noFfmpeg", "exportFailed",
+                                                   "noDevice", "deviceFailed", "pickerFailed", "pluginFailed", "editorFailed",
+                                                   "scanFailed", "chainFull"].indexOf(kind) >= 0
+                    text: {
+                        const m = backend.message
+                        switch (kind) {
+                        case "saved": return qsTr("Saved %1").arg(m.arg)
+                        case "exported": return qsTr("Exported %1").arg(m.arg)
+                        case "copied": return qsTr("Copied pattern %1").arg(m.arg)
+                        case "pasted": return qsTr("Pasted into pattern %1").arg(m.arg)
+                        case "chopped": return qsTr("Chopped onto %1 pads from pad %2").arg(m.arg).arg(m.detail)
+                        case "saveFailed": return qsTr("Couldn't save %1: %2").arg(m.arg).arg(m.detail)
+                        case "openFailed": return qsTr("Couldn't open %1: %2").arg(m.arg).arg(m.detail)
+                        case "exportFailed": return qsTr("Couldn't export %1: %2").arg(m.arg).arg(m.detail)
+                        case "sampleFailed": return qsTr("Couldn't load the sample %1: %2").arg(m.arg).arg(m.detail)
+                        case "noFfmpeg": return qsTr("Loading samples needs ffmpeg, which isn't installed.")
+                        case "noDevice": return qsTr("There is no sound output to play through.")
+                        case "deviceFailed": return qsTr("The sound output stopped working.")
+                        case "pickerFailed": return qsTr("The file chooser didn't open: %1").arg(m.detail)
+                        case "pluginFailed": return qsTr("Couldn't load %1: %2").arg(m.arg).arg(m.detail)
+                        case "editorFailed": return qsTr("%1 couldn't open its window: %2").arg(m.arg).arg(m.detail)
+                        case "scanFailed": return qsTr("Looking for plugins failed: %1").arg(m.detail)
+                        case "chainFull": return qsTr("A chain holds %1 effects at most.").arg(m.arg)
+                        }
+                        return backend.recording ? qsTr("Recording: play the pads, they land on the nearest step")
+                                                 : qsTr("Play the pads with 1–4, Q–R, A–F, Z–V. Press ? for the shortcuts")
+                    }
+                    color: error || backend.recording ? theme.colors.red : theme.quiet
+                    elide: Text.ElideRight
+                }
             }
         }
     }
@@ -653,7 +766,8 @@ ApplicationWindow {
         padding: 26
         background: Rectangle {
             color: theme.background
-            border.color: theme.colors.selection
+            border.width: 3
+            border.color: theme.foreground
             radius: theme.radius
         }
 
@@ -712,7 +826,7 @@ ApplicationWindow {
                     Layout.columnSpan: 2
                     spacing: 14
                     Label {
-                        Layout.preferredWidth: 160
+                        Layout.preferredWidth: 196
                         text: modelData.keys
                         color: theme.accent
                         font.bold: true

@@ -12,6 +12,10 @@
     "one": "%Ln chop",
     "other": "%Ln chops"
   },
+  "%Ln effects": {
+    "one": "%Ln effekt",
+    "other": "%Ln effekter"
+  },
   "%Ln steps": {
     "one": "%Ln trin",
     "other": "%Ln trin"
@@ -107,6 +111,7 @@
   "Install CLAP or LV2 effects, such as lsp-plugins or guitarix, and they show up here too.": "Installér CLAP- eller LV2-effekter, såsom lsp-plugins eller guitarix, så dukker de også op her.",
   "Kit": "Kit",
   "Knock": "Knock",
+  "L lanes · T roll · Y chance": "L baner · T rul · Y chance",
   "Lanes": "Baner",
   "Left %1": "Venstre %1",
   "Length": "Længde",
@@ -129,6 +134,7 @@
   "Mix": "Mix",
   "Mixer": "Mixer",
   "Move between steps and pads": "Flyt mellem trin og pads",
+  "Mute": "Mute",
   "Mute or solo the pad": "Slå pad'en fra eller solo",
   "New or open a song": "Ny eller åbn en sang",
   "No choke": "Ingen kvæl",
@@ -187,16 +193,16 @@
   "Shape": "Form",
   "Show or hide the shortcuts": "Vis eller skjul genvejene",
   "Slice": "Skær",
+  "Solo": "Solo",
   "Song": "Sang",
   "Stab": "Stab",
   "Step %1": "Trin %1",
   "Stop": "Stop",
   "Stutter": "Stutter",
-  "swing": "swing",
   "Swing": "Swing",
+  "swing": "swing",
   "Switch between the steps and the song": "Skift mellem trinnene og sangen",
   "Synth": "Synth",
-  "Tab to edit": "Tab for at redigere",
   "Tempo down or up, by 1 or 10": "Tempo ned eller op, med 1 eller 10",
   "The bar before or after": "Takten før eller efter",
   "The file chooser didn't open: %1": "Filvælgeren åbnede ikke: %1",

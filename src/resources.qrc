@@ -12,6 +12,12 @@
         <file alias="PluginBrowser.qml">PluginBrowser.qml</file>
         <file alias="Mixer.qml">Mixer.qml</file>
         <file alias="LanePicker.qml">LanePicker.qml</file>
+        <file alias="DashedBox.qml">DashedBox.qml</file>
+        <file alias="Stamp.qml">Stamp.qml</file>
+        <file alias="Icon.qml">Icon.qml</file>
+        <file alias="fonts/Anton-Regular.ttf">fonts/Anton-Regular.ttf</file>
+        <file alias="fonts/CourierPrime-Regular.ttf">fonts/CourierPrime-Regular.ttf</file>
+        <file alias="fonts/CourierPrime-Bold.ttf">fonts/CourierPrime-Bold.ttf</file>
         <file alias="Names.js">Names.js</file>
         <file alias="dole.svg">../share/dole.svg</file>
         <file alias="skill.md">skill.md</file>

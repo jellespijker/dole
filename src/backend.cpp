@@ -148,6 +148,15 @@ QVariantList Backend::usedPatterns() const {
     return list;
 }
 
+// Each pattern's length in steps, so the patterns can be drawn as long as
+// they play.
+QVariantList Backend::patternLengths() const {
+    QVariantList list;
+    for (const Pattern &pattern : m_song.patterns)
+        list << pattern.length;
+    return list;
+}
+
 // The bank's sixteen rows of the pattern being edited: each step's level,
 // roll, chance, and nudge, the track's own loop, and its lanes.
 QVariantList Backend::grid() const {

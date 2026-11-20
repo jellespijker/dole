@@ -65,4 +65,5 @@ include(GNUInstallDirs)
 install(TARGETS dole RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES share/dole.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES share/dole.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
-install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/dole)
+install(FILES LICENSE src/fonts/anton-OFL.txt src/fonts/courierprime-OFL.txt
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/dole)

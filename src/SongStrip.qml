@@ -3,9 +3,10 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-// The song: the chain of patterns it plays, one bar each, with a slot at
-// the end to add the next.
-ColumnLayout {
+// The song along the bottom: whether Space plays the pattern or the song,
+// the chain of patterns it plays, with a slot at the end for the next, and
+// what just happened.
+RowLayout {
     id: strip
 
     property bool active: false
@@ -13,35 +14,52 @@ ColumnLayout {
 
     signal slotPicked(int index)
 
-    spacing: 6
+    spacing: 10
 
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
-    RowLayout {
-        spacing: 10
+    // The word inverts while the keys edit the song.
+    Rectangle {
+        implicitWidth: songWord.implicitWidth + 16
+        implicitHeight: 40
+        color: strip.active ? theme.foreground : "transparent"
         Label {
+            id: songWord
+            anchors.centerIn: parent
             text: qsTr("Song")
-            font.bold: true
-            color: strip.active ? theme.accent : theme.foreground
+            font.family: theme.displayFont
+            font.pixelSize: 28
+            font.capitalization: Font.AllUppercase
+            color: strip.active ? theme.background : theme.foreground
         }
-        Label {
-            objectName: "songLength"
-            text: qsTr("%Ln bars", "", backend.chain.length)
-            color: theme.colors.muted
-            font.pixelSize: 12
-        }
-        Label {
-            visible: !strip.active
-            text: qsTr("Tab to edit")
-            color: theme.colors.muted
-            font.pixelSize: 12
+        TapHandler { onTapped: strip.slotPicked(strip.cursor) }
+    }
+
+    // What Space plays: the pattern being edited, or the song.
+    Row {
+        objectName: "mode"
+        Repeater {
+            model: [qsTr("Pattern"), qsTr("Song")]
+            delegate: Chip {
+                required property int index
+                required property string modelData
+                text: modelData
+                implicitHeight: 34
+                on: (index === 1) === backend.songMode
+                onColor: theme.foreground
+                onTextColor: theme.background
+                onClicked: if (!on) backend.toggleSongMode()
+            }
         }
     }
 
     Flickable {
         id: flick
         Layout.fillWidth: true
-        implicitHeight: 34
+        Layout.preferredWidth: slots.width
+        Layout.maximumWidth: slots.width
+        Layout.leftMargin: 6
+        implicitHeight: 48
         contentWidth: slots.width
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -51,7 +69,8 @@ ColumnLayout {
 
         Row {
             id: slots
-            spacing: 4
+            spacing: 6
+            anchors.verticalCenter: parent.verticalCenter
 
             Repeater {
                 model: backend.chain
@@ -59,18 +78,19 @@ ColumnLayout {
                     required property int index
                     required property int modelData
                     readonly property bool playing: backend.playing && backend.songMode && backend.playChainIndex === index
+                    readonly property bool cursor: strip.active && strip.cursor === index
                     objectName: "slot" + index
-                    width: 30
-                    height: 30
-                    radius: Math.min(4, theme.radius)
-                    color: playing ? theme.accent : strip.alpha(theme.colors.selection, 0.8)
-                    border.width: strip.active && strip.cursor === index ? 2 : 0
-                    border.color: theme.foreground
+                    width: 46
+                    height: 40
+                    color: playing ? theme.foreground : "transparent"
+                    border.width: cursor ? 3 : 2
+                    border.color: cursor ? theme.accent : theme.foreground
                     Label {
                         anchors.centerIn: parent
                         text: String.fromCharCode(65 + parent.modelData)
-                        font.bold: true
-                        color: parent.playing ? theme.accentForeground : theme.foreground
+                        font.family: theme.displayFont
+                        font.pixelSize: 22
+                        color: parent.playing ? theme.background : theme.foreground
                     }
                     MouseArea {
                         anchors.fill: parent
@@ -80,17 +100,20 @@ ColumnLayout {
             }
 
             // Where the next pattern goes.
-            Rectangle {
-                width: 30
-                height: 30
-                radius: Math.min(4, theme.radius)
-                color: "transparent"
-                border.width: strip.active && strip.cursor === backend.chain.length ? 2 : 1
-                border.color: strip.active && strip.cursor === backend.chain.length ? theme.foreground : theme.colors.muted
+            Item {
+                width: 46
+                height: 40
+                readonly property bool cursor: strip.active && strip.cursor === backend.chain.length
+                DashedBox {
+                    anchors.fill: parent
+                    lineWidth: parent.cursor ? 3 : 2
+                    color: parent.cursor ? theme.accent : theme.foreground
+                }
                 Label {
                     anchors.centerIn: parent
                     text: "+"
-                    color: theme.colors.muted
+                    font.family: theme.displayFont
+                    font.pixelSize: 22
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -100,9 +123,18 @@ ColumnLayout {
         }
     }
 
+    Label {
+        objectName: "songLength"
+        text: qsTr("%Ln bars", "", backend.chain.length)
+        color: theme.quiet
+        font.pixelSize: 12
+        font.capitalization: Font.AllUppercase
+        font.letterSpacing: 0.9
+    }
+
     // Keeps the cursor, or the slot playing, in view.
     function reveal(index) {
-        const left = index * 34, right = left + 30
+        const left = index * 52, right = left + 46
         if (left < flick.contentX)
             flick.contentX = left
         else if (right > flick.contentX + flick.width)
