@@ -346,10 +346,10 @@ Item {
                                                     anchors.top: parent.top
                                                     anchors.rightMargin: cell.span > 1 ? 9 : 2
                                                     anchors.topMargin: 1
-                                                    visible: cell.level > 0 && cell.chance < 100 && steps.cellWidth > 24
+                                                    visible: cell.level > 0 && cell.chance < 100 && steps.cellWidth > 30
                                                     text: grid.number(cell.chance) + "%"
                                                     color: cell.printed ? theme.background : theme.accentForeground
-                                                    font.pixelSize: 9
+                                                    font.pixelSize: 11
                                                     font.bold: true
                                                 }
                                                 // A nudge: a mark early or late of the middle.
