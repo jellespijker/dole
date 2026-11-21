@@ -32,11 +32,32 @@ Item {
     readonly property int headerWidth: width < 640 ? 150 : 158
     readonly property int stepsLeft: headerWidth + 8
     readonly property int rowSpacing: 5
-    readonly property int laneHeight: 44
+    // Lanes are drawn with a finger: tall enough to see a value under one,
+    // and the lane being worked on taller still.
+    readonly property int laneHeight: 64
+    readonly property int laneOpenHeight: 140
+    // A finger moving this far changes a lane from its bottom to its top,
+    // much further than the lane is tall, so a value can be set exactly.
+    readonly property int laneFineTravel: 360
     readonly property real rowHeight: Math.max(20, Math.min(36, (rows.height - 15 * rowSpacing) / 16))
 
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function number(n) { return n.toLocaleString(Qt.locale(translator.language), 'f', 0) }
+    // A lane's value as it reads: whole steps (pitch's semitones), a percent
+    // for the pad's own settings, or a plugin's own number.
+    function laneText(lane, value) {
+        if (value === null || value === undefined)
+            return "–"
+        const signed = lane.min < 0
+        let shown
+        if (lane.stepped)
+            shown = Math.round(value).toLocaleString(Qt.locale(translator.language), 'f', 0)
+        else if (lane.span <= 2)
+            shown = Math.round(value * 100).toLocaleString(Qt.locale(translator.language), 'f', 0)
+        else
+            shown = value.toLocaleString(Qt.locale(translator.language), 'f', lane.span >= 20 ? 0 : 2)
+        return (signed && value > 0 ? "+" : "") + shown
+    }
     // A hit's ink by its level: full accent at the top, thinner below.
     function hitColor(level) {
         return level >= 4 ? theme.accent : Qt.tint(theme.background, alpha(theme.accent, [0, 0.45, 0.65, 0.82][level]))
@@ -142,6 +163,139 @@ Item {
                 contentHeight: column.height
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
+
+                // Drawing on the lanes, with a finger or the mouse. It lives here,
+                // over every row, not in a lane: each change redraws the lanes,
+                // and a handler in one would let go of the finger.
+                //
+                // Pressing a step and moving up or down nudges its value from
+                // where it was, a lane's whole range over a long way, so a
+                // finger can set it exactly; sliding across the steps draws
+                // them where the finger is. A long press or a right click
+                // clears a step, so the one before carries on. Anywhere but a
+                // lane's steps, the press goes on to what is under it.
+                MouseArea {
+                    id: laneTouch
+                    objectName: "laneTouch"
+                    z: 10
+                    width: column.width
+                    height: column.height
+                    preventStealing: true
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    pressAndHoldInterval: 600
+                    property var gesture: null
+
+                    function laneUnder(x, y) {
+                        let item = column
+                        while (item) {
+                            if (item.isLane)
+                                return item
+                            const p = laneTouch.mapToItem(item, x, y)
+                            item = item.childAt(p.x, p.y)
+                        }
+                        return null
+                    }
+                    function findLane(pad, id) {
+                        const search = (item) => {
+                            if (item.isLane && item.pad === pad && item.laneId === id)
+                                return item
+                            for (let i = 0; i < item.children.length; i++) {
+                                const found = search(item.children[i])
+                                if (found)
+                                    return found
+                            }
+                            return null
+                        }
+                        return search(column)
+                    }
+                    function stepUnder(lane, x) {
+                        const p = laneTouch.mapToItem(lane.steps, x, 0)
+                        return grid.viewStart + lane.steps.cellAt(p.x)
+                    }
+
+                    onPressed: (mouse) => {
+                        const lane = laneUnder(mouse.x, mouse.y)
+                        const p = lane ? mapToItem(lane.steps, mouse.x, mouse.y) : null
+                        if (!lane || p.x < 0 || p.x > lane.steps.width) {
+                            mouse.accepted = false
+                            return
+                        }
+                        const step = stepUnder(lane, mouse.x)
+                        gesture = { pad: lane.pad, id: lane.laneId, index: lane.index, step: step,
+                                    x: mouse.x, y: mouse.y, min: lane.min, span: lane.span, stepped: lane.stepped,
+                                    mode: "nudge", start: undefined, clearing: mouse.button === Qt.RightButton }
+                        backend.selectPad(lane.pad)
+                        grid.lanePicked(lane.pad, lane.index, step)
+                        if (gesture.clearing)
+                            backend.clearLanePoint(lane.pad, lane.laneId, step)
+                    }
+                    onPositionChanged: (mouse) => {
+                        const g = gesture
+                        if (!g || !pressed)
+                            return
+                        const lane = findLane(g.pad, g.id)
+                        if (!lane)
+                            return
+                        const step = stepUnder(lane, mouse.x)
+                        if (g.clearing) {
+                            if (step !== g.step) {
+                                g.step = step
+                                backend.clearLanePoint(g.pad, g.id, step)
+                                grid.lanePicked(g.pad, g.index, step)
+                            }
+                            return
+                        }
+                        const p = mapToItem(lane.steps, mouse.x, mouse.y)
+                        const drawn = g.min + (1 - Math.max(0, Math.min(1, p.y / lane.steps.height))) * g.span
+                        if (g.mode === "nudge" && step !== g.step && Math.abs(mouse.x - g.x) > 16) {
+                            // A slide across draws, from the step it started on.
+                            g.mode = "draw"
+                            backend.setLanePoint(g.pad, g.id, g.step, drawn)
+                        }
+                        if (g.mode === "draw") {
+                            backend.setLanePoint(g.pad, g.id, step, drawn)
+                            grid.lanePicked(g.pad, g.index, step)
+                            return
+                        }
+                        const rise = g.y - mouse.y
+                        if (g.start === undefined) {
+                            // A touch that doesn't move only picks the step.
+                            if (Math.abs(rise) < 4)
+                                return
+                            // From the value the step plays with now: its own, the
+                            // one carried from before, or the pad's setting.
+                            backend.changeLanePoint(g.pad, g.id, g.step, 0)
+                            const fresh = findLane(g.pad, g.id)
+                            g.start = fresh ? fresh.modelData.values[g.step] : g.min
+                            g.y = mouse.y
+                            return
+                        }
+                        backend.setLanePoint(g.pad, g.id, g.step, g.start + rise / grid.laneFineTravel * g.span)
+                    }
+                    onPressAndHold: {
+                        const g = gesture
+                        if (!g || g.start !== undefined || g.mode === "draw")
+                            return
+                        g.clearing = true
+                        backend.clearLanePoint(g.pad, g.id, g.step)
+                    }
+                    onReleased: gesture = null
+                    onCanceled: gesture = null
+                    // The wheel nudges the step under it a hundredth of the way,
+                    // or a whole step of a stepped lane.
+                    onWheel: (wheel) => {
+                        const lane = laneUnder(wheel.x, wheel.y)
+                        const p = lane ? mapToItem(lane.steps, wheel.x, wheel.y) : null
+                        if (!lane || p.x < 0 || p.x > lane.steps.width || wheel.angleDelta.y === 0) {
+                            wheel.accepted = false
+                            return
+                        }
+                        const step = stepUnder(lane, wheel.x)
+                        backend.selectPad(lane.pad)
+                        grid.lanePicked(lane.pad, lane.index, step)
+                        backend.changeLanePoint(lane.pad, lane.laneId, step, wheel.angleDelta.y > 0 ? 0.01 : -0.01)
+                    }
+                }
 
                 Column {
                     id: column
@@ -452,9 +606,17 @@ Item {
                                         return out
                                     }
 
+                                    // Found by the touch over the grid, which outlives this
+                                    // lane as each change redraws it.
+                                    readonly property bool isLane: true
+                                    readonly property int pad: row.pad
+                                    readonly property string laneId: modelData.id
+                                    readonly property bool stepped: modelData.stepped
+                                    readonly property alias steps: laneSteps
+
                                     objectName: "lane" + row.pad + "_" + modelData.id
                                     width: row.width
-                                    height: grid.laneHeight
+                                    height: chosen ? grid.laneOpenHeight : grid.laneHeight
 
                                     onChosenChanged: if (chosen) Qt.callLater(grid.reveal, lane)
 
@@ -475,23 +637,38 @@ Item {
                                         RowLayout {
                                             anchors.fill: parent
                                             anchors.leftMargin: 34
-                                            anchors.rightMargin: 6
-                                            spacing: 4
-                                            Caption {
+                                            anchors.rightMargin: 2
+                                            spacing: 2
+                                            ColumnLayout {
                                                 Layout.fillWidth: true
-                                                text: lane.modelData.name
-                                                color: lane.chosen ? theme.background : theme.foreground
-                                                elide: Text.ElideRight
-                                                wrapMode: Text.Wrap
-                                                maximumLineCount: 2
+                                                spacing: 2
+                                                Caption {
+                                                    Layout.fillWidth: true
+                                                    text: lane.modelData.name
+                                                    color: lane.chosen ? theme.background : theme.foreground
+                                                    elide: Text.ElideRight
+                                                    wrapMode: Text.Wrap
+                                                    maximumLineCount: 2
+                                                }
+                                                // The step being set, read out here, away from
+                                                // the finger that covers it.
+                                                Label {
+                                                    objectName: "laneValue"
+                                                    visible: lane.chosen
+                                                    text: grid.laneText(lane, lane.carried[grid.cursorStep])
+                                                    color: theme.background
+                                                    font.family: theme.displayFont
+                                                    font.pixelSize: 30
+                                                }
                                             }
                                             Item {
-                                                implicitWidth: 18
-                                                implicitHeight: 18
+                                                Layout.alignment: Qt.AlignTop
+                                                implicitWidth: 36
+                                                implicitHeight: 36
                                                 Icon {
                                                     anchors.centerIn: parent
-                                                    width: 9
-                                                    height: 9
+                                                    width: 11
+                                                    height: 11
                                                     name: "close"
                                                     color: lane.chosen ? theme.background : theme.quiet
                                                 }
@@ -540,41 +717,11 @@ Item {
                                                     Rectangle {
                                                         anchors.fill: parent
                                                         anchors.margins: -4
-                                                        visible: lane.chosen && grid.active && grid.cursorStep === point.step
+                                                        visible: lane.chosen && (grid.active || laneTouch.pressed) && grid.cursorStep === point.step
                                                         color: "transparent"
                                                         border.width: 3
                                                         border.color: theme.foreground
                                                     }
-                                                }
-                                            }
-
-                                            // Drawn with a finger or the mouse; a right click or a
-                                            // long press clears a step, so the one before carries on.
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                preventStealing: true
-                                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                                pressAndHoldInterval: 600
-                                                property bool clearing: false
-                                                function draw(mouse) {
-                                                    const step = grid.viewStart + laneSteps.cellAt(mouse.x)
-                                                    const fraction = 1 - Math.max(0, Math.min(1, mouse.y / height))
-                                                    backend.selectPad(row.pad)
-                                                    grid.lanePicked(row.pad, lane.index, step)
-                                                    if (clearing)
-                                                        backend.clearLanePoint(row.pad, lane.modelData.id, step)
-                                                    else
-                                                        backend.setLanePoint(row.pad, lane.modelData.id, step,
-                                                                             lane.min + fraction * lane.span)
-                                                }
-                                                onPressed: (mouse) => {
-                                                    clearing = mouse.button === Qt.RightButton
-                                                    draw(mouse)
-                                                }
-                                                onPositionChanged: (mouse) => { if (pressed) draw(mouse) }
-                                                onPressAndHold: (mouse) => {
-                                                    clearing = true
-                                                    draw(mouse)
                                                 }
                                             }
                                         }

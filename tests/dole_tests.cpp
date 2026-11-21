@@ -1828,6 +1828,90 @@ private slots:
         QVERIFY2(problems.isEmpty(), qPrintable(problems.join('\n')));
     }
 
+    void lanesAreDrawnAndNudgedWithAFinger() {
+        QTemporaryDir dir;
+        Translator translator(dir.path() + "/language");
+        QCoreApplication::installTranslator(&translator);
+        Theme theme(dir.path());
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.newSong();
+        QQmlApplicationEngine qml;
+        QStringList warnings;
+        connect(&qml, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        qml.rootContext()->setContextProperty("translator", &translator);
+        qml.rootContext()->setContextProperty("theme", &theme);
+        qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
+        qml.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
+        QVERIFY(window);
+        window->resize(1400, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+
+        backend.selectPad(0);
+        backend.addLane(0, "pan");
+        QMetaObject::invokeMethod(window, "expand", Q_ARG(QVariant, 0));
+        auto lane = [&]() -> QQuickItem * {
+            std::function<QQuickItem *(QQuickItem *)> find = [&](QQuickItem *item) -> QQuickItem * {
+                if (item->objectName() == "lane0_pan")
+                    return item;
+                for (QQuickItem *child : item->childItems())
+                    if (QQuickItem *found = find(child))
+                        return found;
+                return nullptr;
+            };
+            return find(window->contentItem());
+        };
+        QTRY_VERIFY(lane());
+        // Until the opened track has settled, its lanes aren't where they'll be.
+        QTest::qWait(300);
+        // A step's centre, and a height within the lane.
+        auto at = [&](int step, double y) {
+            QQuickItem *steps = lane()->property("steps").value<QQuickItem *>();
+            const double cell = (steps->width() - 15 * 4) / 16;
+            return steps->mapToScene(QPointF(step * (cell + 4) + cell / 2, y)).toPoint();
+        };
+        auto drag = [&](const QList<QPoint> &points) {
+            QTest::mousePress(window, Qt::LeftButton, {}, points.first());
+            for (const QPoint &point : points.mid(1)) {
+                QMouseEvent move(QEvent::MouseMove, point, window->mapToGlobal(point), Qt::NoButton, Qt::LeftButton, {});
+                QGuiApplication::sendEvent(window, &move);
+                QTest::qWait(20);
+            }
+            QTest::mouseRelease(window, Qt::LeftButton, {}, points.last());
+        };
+        auto pan = [&](int step) { return backend.song().patterns[0].lanes.value(0).value("pan").value(step, std::nan("")); };
+
+        // Sliding across the steps draws every one of them, though each
+        // change redraws the lane under the finger.
+        drag({at(2, 10), at(3, 10), at(4, 10), at(5, 10), at(6, 10)});
+        for (int step = 2; step <= 6; ++step)
+            QVERIFY2(pan(step) > 0.5, qPrintable(QString("step %1 is %2").arg(step + 1).arg(pan(step))));
+
+        // Holding one step and moving up nudges it from where it was, a
+        // little at a time: far less than the finger moved across the lane.
+        const QPoint start = at(10, 40);
+        drag({start, start - QPoint(0, 6), start - QPoint(0, 24), start - QPoint(0, 42)});
+        // It starts from the value carried from the drawn steps before it.
+        const double nudged = pan(10) - pan(6);
+        QVERIFY2(nudged > 0.05 && nudged < 0.3, qPrintable(QString::number(nudged)));
+        // One undo takes the nudge back.
+        backend.undo();
+        QVERIFY(std::isnan(pan(10)));
+
+        // A tap only picks the step; it sets nothing.
+        drag({at(12, 40)});
+        QVERIFY(std::isnan(pan(12)));
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
     void windowPlaysFromTheKeysAndTheScreen() {
         // A temp language and theme, so the test never depends on the desktop's.
         QTemporaryDir dir;
