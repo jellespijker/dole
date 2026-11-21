@@ -34,7 +34,7 @@ ApplicationWindow {
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
     readonly property bool idle: !help.opened && !confirm.opened && !chop.opened && !chain.opened && !mixer.opened
-                                 && !lanePicker.opened && !jamView.opened
+                                 && !lanePicker.opened && !jamView.opened && !tempoView.opened
     property int cursorStep: 0
     // -1 is the steps; 0 and up the selected track's lanes, when it is open.
     property int cursorLane: -1
@@ -254,7 +254,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+E"; enabled: win.idle; onActivated: backend.exportAudio() }
     Shortcut {
         sequence: "?"
-        enabled: !confirm.opened && !chop.opened && !chain.opened && !mixer.opened && !lanePicker.opened && !jamView.opened
+        enabled: !confirm.opened && !chop.opened && !chain.opened && !mixer.opened && !lanePicker.opened && !jamView.opened && !tempoView.opened
         onActivated: help.opened ? help.close() : help.open()
     }
     Shortcut { sequences: ["Ctrl+Q"]; enabled: win.idle; onActivated: win.close() }
@@ -447,14 +447,40 @@ ApplicationWindow {
                         verticalAlignment: Text.AlignVCenter
                         font.pixelSize: win.headerHeight * 0.82
                         topPadding: win.headerHeight * 0.1
+                        // A finger drags it up or down, a beat a minute for every
+                        // few pixels; a tap opens the tempo's own controls.
                         MouseArea {
+                            objectName: "bpmTouch"
                             anchors.fill: parent
+                            preventStealing: true
+                            property real startY: 0
+                            property int startBpm: 0
+                            property bool dragging: false
+                            property real wheelTurn: 0
+                            onPressed: (mouse) => {
+                                startY = mouse.y
+                                startBpm = backend.bpm
+                                dragging = false
+                            }
+                            onPositionChanged: (mouse) => {
+                                const rise = startY - mouse.y
+                                if (!dragging && Math.abs(rise) < 6)
+                                    return
+                                dragging = true
+                                backend.setBpm(startBpm + Math.round(rise / 8))
+                            }
+                            onClicked: if (!dragging) tempoView.open()
+                            // A notch at a time, however finely a touchpad scrolls.
                             onWheel: (wheel) => {
-                                const up = wheel.angleDelta.y > 0 ? 1 : -1
+                                wheelTurn += wheel.angleDelta.y
+                                const notches = Math.trunc(wheelTurn / 120)
+                                if (notches === 0)
+                                    return
+                                wheelTurn -= notches * 120
                                 if (wheel.modifiers & Qt.ShiftModifier)
-                                    backend.changeSwing(up)
+                                    backend.changeSwing(notches)
                                 else
-                                    backend.changeBpm(up)
+                                    backend.changeBpm(notches)
                             }
                         }
                     }
@@ -468,6 +494,7 @@ ApplicationWindow {
                         }
                         Row {
                             spacing: 5
+                            TapHandler { onTapped: tempoView.open() }
                             Label {
                                 objectName: "swing"
                                 text: backend.swing.toLocaleString(Qt.locale(translator.language), 'f', 0) + "%"
@@ -887,6 +914,12 @@ ApplicationWindow {
     ChopView {
         id: chop
         objectName: "chop"
+        rightToLeft: win.rightToLeft
+    }
+
+    TempoView {
+        id: tempoView
+        objectName: "tempoView"
         rightToLeft: win.rightToLeft
     }
 

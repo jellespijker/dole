@@ -17,6 +17,9 @@ Rectangle {
     property bool display: false
     property string icon: ""
 
+    // Held down, for buttons that repeat while held.
+    readonly property bool pressed: tap.pressed
+
     signal clicked()
     signal pressAndHold()
 

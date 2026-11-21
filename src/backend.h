@@ -150,6 +150,8 @@ public:
     Q_INVOKABLE void chainSet(int index, int pattern);
     Q_INVOKABLE void chainRemove(int index);
     Q_INVOKABLE void changeBpm(int delta);
+    // A drag or a tapped tempo sets it outright; in a row, one undo.
+    Q_INVOKABLE void setBpm(int bpm);
     Q_INVOKABLE void changeSwing(int delta);
     Q_INVOKABLE void cycleGrit();
     Q_INVOKABLE void toggleVinyl();

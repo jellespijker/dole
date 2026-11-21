@@ -63,6 +63,10 @@ Dole follows the Omarchy theme and language.
 dole open [song.dole]
 ```
 
+On a touch screen, drag the tempo up or down to change it, or tap it for
+steps that repeat while held, tap tempo, and the swing. Drag up or down on
+a lane's step to nudge it finely, or across the steps to draw them.
+
 ## Shortcuts
 
 | Keys | Action |

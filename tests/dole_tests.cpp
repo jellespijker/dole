@@ -1912,6 +1912,79 @@ private slots:
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
+    void tempoIsSetWithAFinger() {
+        QTemporaryDir dir;
+        Translator translator(dir.path() + "/language");
+        QCoreApplication::installTranslator(&translator);
+        Theme theme(dir.path());
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.newSong();
+        QQmlApplicationEngine qml;
+        QStringList warnings;
+        connect(&qml, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        qml.rootContext()->setContextProperty("translator", &translator);
+        qml.rootContext()->setContextProperty("theme", &theme);
+        qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
+        qml.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
+        QVERIFY(window);
+        window->resize(1400, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTest::qWait(300);
+        auto item = [&](const QString &name) -> QQuickItem * {
+            std::function<QQuickItem *(QQuickItem *)> find = [&](QQuickItem *at) -> QQuickItem * {
+                if (at->objectName() == name)
+                    return at;
+                for (QQuickItem *child : at->childItems())
+                    if (QQuickItem *found = find(child))
+                        return found;
+                return nullptr;
+            };
+            return find(window->contentItem());
+        };
+        auto centre = [](QQuickItem *at) { return at->mapToScene({at->width() / 2, at->height() / 2}).toPoint(); };
+
+        // Dragged up, a beat a minute for every few pixels, undone as one.
+        const int before = backend.bpm();
+        const QPoint number = centre(item("bpm"));
+        QTest::mousePress(window, Qt::LeftButton, {}, number);
+        for (int rise = 4; rise <= 40; rise += 4) {
+            const QPoint point = number - QPoint(0, rise);
+            QMouseEvent move(QEvent::MouseMove, point, window->mapToGlobal(point), Qt::NoButton, Qt::LeftButton, {});
+            QGuiApplication::sendEvent(window, &move);
+        }
+        QTest::mouseRelease(window, Qt::LeftButton, {}, number - QPoint(0, 40));
+        QCOMPARE(backend.bpm(), before + 5);
+        backend.undo();
+        QCOMPARE(backend.bpm(), before);
+
+        // Tapped, it opens the tempo's own controls.
+        auto *view = window->findChild<QObject *>("tempoView");
+        QVERIFY(view);
+        QTest::mouseClick(window, Qt::LeftButton, {}, number);
+        QTRY_VERIFY(view->property("opened").toBool());
+
+        // Four taps half a second apart are 120 beats a minute.
+        QTRY_VERIFY(item("tapTempo"));
+        const QPoint pad = centre(item("tapTempo"));
+        for (int i = 0; i < 4; ++i) {
+            QTest::mousePress(window, Qt::LeftButton, {}, pad);
+            QTest::mouseRelease(window, Qt::LeftButton, {}, pad);
+            if (i < 3)
+                QTest::qWait(500);
+        }
+        QVERIFY2(std::abs(backend.bpm() - 120) <= 2, qPrintable(QString::number(backend.bpm())));
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
     void windowPlaysFromTheKeysAndTheScreen() {
         // A temp language and theme, so the test never depends on the desktop's.
         QTemporaryDir dir;

@@ -794,6 +794,12 @@ void Backend::changeBpm(int delta) {
     apply(next, "bpm");
 }
 
+void Backend::setBpm(int bpm) {
+    Song next = m_song;
+    next.bpm = qBound(kMinBpm, bpm, kMaxBpm);
+    apply(next, "bpm");
+}
+
 void Backend::changeSwing(int delta) {
     Song next = m_song;
     next.swing = qBound(kMinSwing, next.swing + delta, kMaxSwing);
