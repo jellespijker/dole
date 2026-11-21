@@ -9,11 +9,13 @@
 #include <QQuickStyle>
 #include <QTimer>
 #include <QUrl>
+#include <cstdio>
 
 #include "backend.h"
 #include "cli.h"
 #include "engine.h"
 #include "portalfilepicker.h"
+#include "remote.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -71,6 +73,13 @@ int main(int argc, char *argv[]) {
     const QString song = args.positionalArguments().value(1);
     if (!song.isEmpty())
         backend.openPath(QFileInfo(song).absoluteFilePath());
+
+    // Agents and scripts play the window through dole remote and dole mcp.
+    // Without the socket the window still works; it only can't be reached.
+    RemoteServer remote(&backend);
+    QString remoteError;
+    if (!remote.listen(remoteDirectory(), &remoteError))
+        fprintf(stderr, "dole: agents can't reach this window: %s\n", qPrintable(remoteError));
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);

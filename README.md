@@ -141,6 +141,38 @@ each takes `--json` and exits 0 or 1:
 | `dole plugins` | List the synths and effects that can be loaded |
 | `dole skill install` | Install the agent skill for Claude Code and Codex |
 
+## Playing live with an agent
+
+An open window listens on a socket in your runtime directory that only you
+can reach, so an agent or a script can play along while it runs. Changes
+are heard from the next step, and each is one undo in the window: Ctrl+Z
+takes back whatever the agent did. Nothing is saved unless it asks to.
+
+For an agent that speaks MCP, such as Claude Code:
+
+```sh
+claude mcp add dole -- dole mcp
+```
+
+Its tools read the song, merge a change into it, play and stop, show a
+pattern, audition a pad, undo, and wait for the next bar, so a change can
+land on the beat. Agents reply in seconds, not milliseconds, so they play by
+writing steps rather than by striking pads in time.
+
+From a script, `dole remote` sends the same requests:
+
+| Command | |
+| --- | --- |
+| `dole remote status` | What's playing: the pattern, step, and bar under the playhead |
+| `dole remote song` | The open song, as `.dole` JSON |
+| `dole remote edit '{"patch": {"bpm": 96}}'` | Merge part of a song in (`-` reads it from stdin) |
+| `dole remote play`, `stop`, `record` | The transport |
+| `dole remote select B`, `select hat` | Show a pattern, or choose a pad |
+| `dole remote hit A1` | Strike a pad |
+| `dole remote wait bar` | Return at the next bar (`step`, `loop`, `stop`, `edit`) |
+| `dole remote undo`, `redo`, `save` | |
+| `dole remote watch` | Print every step, edit, and start and stop as JSON lines |
+
 ## Building
 
 Dole uses Qt 6 (base, declarative, multimedia, svg, wayland), `ffmpeg`,

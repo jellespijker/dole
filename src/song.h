@@ -147,6 +147,9 @@ struct Song {
 const QStringList &kitIds();
 // A pad as people name it: "A1" to "D16".
 QString padName(int pad);
+// A pad by its number ("1" to "64"), bank and number ("B3"), or kit sound
+// ("boom"); -1 when it names none.
+int padFromKey(const QString &key);
 
 // What a lane moves, and over what range.
 struct LaneInfo {
@@ -175,6 +178,12 @@ float levelGain(int level);
 QJsonObject songToJson(const Song &song, const QString &baseDirectory);
 // Fills song and returns true, or says what's wrong in error.
 bool songFromJson(const QJsonObject &json, const QString &baseDirectory, Song *song, QString *error);
+// Lays part of a song over a whole one, both as JSON, the way JSON Merge
+// Patch (RFC 7396) does: objects merge, anything else replaces, and null
+// takes a key out. Pads and rows are found however the patch names them
+// ("7", "A7", or "hat"), and a row given as an object keeps the steps it
+// had, so {"roll": {"5": 3}} adds a roll without retyping the row.
+QJsonObject patchSongJson(const QJsonObject &song, const QJsonObject &patch);
 bool loadSong(const QString &path, Song *song, QString *error);
 bool saveSong(const QString &path, const Song &song, QString *error);
 

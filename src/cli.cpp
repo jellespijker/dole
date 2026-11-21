@@ -12,7 +12,9 @@
 #include <QSaveFile>
 #include <cstdio>
 
+#include "mcp.h"
 #include "plugin.h"
+#include "remote.h"
 #include "rack.h"
 #include "renderer.h"
 #include "song.h"
@@ -273,6 +275,58 @@ int skill(const QStringList &arguments) {
     return 0;
 }
 
+// One request to the open window. The common ones have short forms
+// (dole remote play); any other takes its parameters as JSON, or - to read
+// them from stdin.
+int remote(const QStringList &arguments) {
+    Command command("remote", "Play the open window: dole remote <request> [JSON parameters, or - for stdin].", false);
+    command.parser.addPositionalArgument("request",
+                                         "status, song, edit, play, stop, record, select, hit, undo, redo, save, "
+                                         "wait, or watch",
+                                         "<request>");
+    command.parser.addPositionalArgument("parameters", "A JSON object, or - to read it from stdin", "[parameters]");
+    command.parser.process(arguments);
+    QString method = command.argument(1);
+    const QString given = command.argument(2);
+    if (method.isEmpty())
+        return fail("Name a request, such as dole remote status; dole help remote lists them.");
+    if (method == "watch")
+        return remoteWatch();
+
+    QJsonObject params;
+    if (method == "play" || method == "stop" || method == "record") {
+        params.insert("action", method);
+        method = "transport";
+    } else if (method == "hit" && !given.isEmpty() && !given.startsWith('{')) {
+        params.insert("pad", given);
+    } else if (method == "select" && !given.isEmpty() && !given.startsWith('{')) {
+        params.insert(patternIndex(given) >= 0 ? "pattern" : "pad", given);
+    } else if (method == "wait" && !given.isEmpty() && !given.startsWith('{')) {
+        params.insert("until", given);
+    } else if (!given.isEmpty()) {
+        QByteArray text = given.toUtf8();
+        if (given == "-") {
+            QFile in;
+            if (!in.open(stdin, QIODevice::ReadOnly))
+                return fail("Could not read stdin.");
+            text = in.readAll();
+        }
+        QJsonParseError parse;
+        const QJsonDocument document = QJsonDocument::fromJson(text, &parse);
+        if (!document.isObject())
+            return fail("The parameters are a JSON object: " + parse.errorString());
+        params = document.object();
+    }
+    if (method == "edit")
+        params.insert("base", QDir::currentPath());
+    const int timeout = method == "wait" ? (params.value("timeout").toInt(30) + 5) * 1000 : 10000;
+    const RemoteReply reply = remoteRequest(method, params, timeout);
+    if (!reply.ok)
+        return fail(reply.error);
+    print(reply.result);
+    return 0;
+}
+
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (topic == "format") {
@@ -298,12 +352,14 @@ QString cliSummary() {
            "  check <song>                  Report every problem, and summarize the song\n"
            "  render <song> -o <file.wav>   Render the song, or one pattern, to WAV\n"
            "  plugins                       List the effects and synths to load\n"
+           "  remote <request>              Play the open window: edit it, start it, wait for the bar\n"
+           "  mcp                           Serve the open window to coding agents over MCP\n"
            "  help format                   How a .dole song file is written\n"
            "  skill [install]               Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"new", "check", "render", "plugins", "skill", "help"}.contains(word);
+    return QStringList{"new", "check", "render", "plugins", "remote", "mcp", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -312,6 +368,8 @@ int runCli(const QStringList &arguments) {
            : command == "check"  ? check(arguments)
            : command == "render" ? render(arguments)
            : command == "plugins" ? plugins(arguments)
+           : command == "remote" ? remote(arguments)
+           : command == "mcp"    ? runMcp()
            : command == "skill"  ? skill(arguments)
                                  : help(arguments);
 }

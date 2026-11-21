@@ -201,6 +201,10 @@ std::array<Pad, kPads> Song::defaultPads() {
     return pads;
 }
 
+int padFromKey(const QString &key) {
+    return padIndex(key);
+}
+
 QString padName(int pad) {
     return QString(QChar('A' + pad / kBankPads)) + QString::number(pad % kBankPads + 1);
 }
@@ -575,6 +579,83 @@ bool songFromJson(const QJsonObject &input, const QString &baseDirectory, Song *
 
     *out = song;
     return true;
+}
+
+namespace {
+
+QJsonValue mergePatch(const QJsonValue &target, const QJsonValue &patch) {
+    if (!patch.isObject())
+        return patch;
+    QJsonObject merged = target.isObject() ? target.toObject() : QJsonObject();
+    const QJsonObject changes = patch.toObject();
+    for (auto it = changes.begin(); it != changes.end(); ++it) {
+        if (it.value().isNull())
+            merged.remove(it.key());
+        else
+            merged.insert(it.key(), mergePatch(merged.value(it.key()), it.value()));
+    }
+    return merged;
+}
+
+// The key songToJson writes for a pad, so a patch naming it another way
+// lands on the same one. A key that names no pad is kept, for the song's
+// own check to report.
+QString padKey(const QString &key) {
+    const int pad = padIndex(key);
+    return pad < 0 ? key : QString::number(pad + 1);
+}
+
+QJsonObject patchPattern(QJsonObject rows, const QJsonObject &patch) {
+    for (auto it = patch.begin(); it != patch.end(); ++it) {
+        const QString key = it.key() == "length" ? it.key() : padKey(it.key());
+        if (it.value().isNull()) {
+            rows.remove(key);
+            continue;
+        }
+        QJsonValue row = rows.value(key);
+        if (it.value().isObject() && row.isString())
+            row = QJsonObject{{"steps", row}};
+        rows.insert(key, mergePatch(row, it.value()));
+    }
+    return rows;
+}
+
+} // namespace
+
+QJsonObject patchSongJson(const QJsonObject &song, const QJsonObject &patch) {
+    QJsonObject merged = song;
+    for (auto it = patch.begin(); it != patch.end(); ++it) {
+        const QString &key = it.key();
+        if (it.value().isNull()) {
+            merged.remove(key);
+        } else if (key == "pads" && it.value().isObject()) {
+            QJsonObject pads = merged.value(key).toObject();
+            const QJsonObject changes = it.value().toObject();
+            for (auto pad = changes.begin(); pad != changes.end(); ++pad) {
+                if (pad.value().isNull())
+                    pads.remove(padKey(pad.key()));
+                else
+                    pads.insert(padKey(pad.key()), mergePatch(pads.value(padKey(pad.key())), pad.value()));
+            }
+            merged.insert(key, pads);
+        } else if (key == "patterns" && it.value().isObject()) {
+            QJsonObject patterns = merged.value(key).toObject();
+            const QJsonObject changes = it.value().toObject();
+            for (auto pattern = changes.begin(); pattern != changes.end(); ++pattern) {
+                const QString name = pattern.key().toUpper();
+                if (pattern.value().isNull())
+                    patterns.remove(name);
+                else if (pattern.value().isObject())
+                    patterns.insert(name, patchPattern(patterns.value(name).toObject(), pattern.value().toObject()));
+                else
+                    patterns.insert(name, pattern.value());
+            }
+            merged.insert(key, patterns);
+        } else {
+            merged.insert(key, mergePatch(merged.value(key), it.value()));
+        }
+    }
+    return merged;
 }
 
 bool loadSong(const QString &path, Song *song, QString *error) {

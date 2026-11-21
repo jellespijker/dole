@@ -6,8 +6,8 @@ description: |
   CLAP and LV2 synths), each with its filter, envelope, pan, and effect
   chain, patterns of one to four bars with rolls, chance, nudges, and
   automation lanes, and a song chain. Use for ANY request to write,
-  change, check, or render a beat, drum pattern, loop, chop, or .dole file, or
-  to turn one into a WAV.
+  change, check, or render a beat, drum pattern, loop, chop, or .dole file, to
+  turn one into a WAV, or to play along live in the open dole window.
 ---
 
 # dole
@@ -42,3 +42,24 @@ on each pad, for this version of dole.
 5. The person can open it to play the pads and edit with `dole open beat.dole`.
 
 Each command takes `--json`, exits 0 or 1, and writes errors to stderr.
+
+## Playing the open window live
+
+When the person has dole open and wants you to play along, change the
+window's song instead of the file. With the dole MCP server (`dole mcp`),
+use its tools; otherwise `dole remote`, which prints JSON and exits 0 or 1:
+
+1. `dole remote song` prints the song as it is now, edits by hand included.
+2. `dole remote edit '<json>'` merges a patch in, heard from the next step:
+   `{"patch": {"patterns": {"A": {"hat": "x.x.x.x.x.x.x.x."}}}}`. Objects
+   merge, anything else replaces, `null` removes; a row given as an object
+   keeps its steps (`{"hat": {"roll": {"16": 3}}}`). `{"song": {...}}`
+   replaces the whole song. Each edit is one undo for the person.
+3. `dole remote play`, `stop`, `select B` (show pattern B), `hit hat`.
+4. `dole remote wait bar` (or `loop`, `step`, `stop`, `edit`) returns when
+   the music gets there, to land a change on the beat or to notice the
+   person editing.
+
+Replies take you seconds, so play by writing steps, not by hitting pads in
+time. The song isn't saved until `dole remote save`; ask before saving
+over the person's file.

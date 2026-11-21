@@ -18,6 +18,7 @@
 #include <cmath>
 
 #include "backend.h"
+#include "remote.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -26,11 +27,6 @@ namespace {
 bool write(const QString &path, const QByteArray &contents) {
     QFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size();
-}
-
-int lines(const QString &path) {
-    QFile file(path);
-    return file.open(QIODevice::ReadOnly) ? file.readAll().count('\n') : 0;
 }
 
 // How many lines of a file mention a word.
@@ -842,6 +838,128 @@ private slots:
         QVERIFY(!songFromJson(QJsonDocument::fromJson(R"({"dole": 3, "patterns": {"A": {"1": {"steps": "x...............",
             "lanes": {"wobble": {"1": 1}}}}}})").object(), {}, &back, &error));
         QVERIFY(error.contains("\"wobble\" isn't a lane"));
+    }
+
+    void patchesNamePadsAnyWayAndKeepRows() {
+        const QJsonObject song = songToJson(songFrom(R"({"dole": 3, "patterns": {"A": {
+            "1": "X.......X.......",
+            "7": "x.x.x.x.x.x.x.x."}}})"), {});
+        const QJsonObject patched = patchSongJson(song, QJsonDocument::fromJson(R"({
+            "bpm": 96,
+            "pads": {"hat": {"volume": 0.5}, "B1": {"tune": -3}},
+            "patterns": {"a": {"hat": {"roll": {"16": 3}}, "boom": null, "A3": "....X.......X..."},
+                         "B": {"length": 32}}})").object());
+        Song result;
+        QString error;
+        QVERIFY2(songFromJson(patched, {}, &result, &error), qPrintable(error));
+        QCOMPARE(result.bpm, 96);
+        QCOMPARE(result.pads[6].volume, 0.5);
+        QCOMPARE(result.pads[16].tune, -3);
+        // The roll joined the hat's row, which kept its steps.
+        QCOMPARE(result.patterns[0].steps[6][0].level, 3);
+        QCOMPARE(result.patterns[0].steps[6][15].roll, 3);
+        QCOMPARE(result.patterns[0].steps[0][0].level, 0);
+        QCOMPARE(result.patterns[0].steps[2][4].level, 4);
+        QCOMPARE(result.patterns[1].length, 32);
+    }
+
+    void agentsPlayTheOpenWindow() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.newSong();
+        RemoteServer server(&backend);
+        QTemporaryDir directory;
+        QString error;
+        QVERIFY2(server.listen(directory.filePath("dole"), &error), qPrintable(error));
+        QCOMPARE(QFileInfo(directory.filePath("dole")).permissions() & (QFileDevice::ReadOther | QFileDevice::ReadGroup),
+                 QFileDevice::Permissions());
+
+        QLocalSocket socket;
+        socket.connectToServer(server.path());
+        QVERIFY(socket.waitForConnected(1000));
+        int next = 0;
+        auto ask = [&](const QString &method, const QJsonObject &params = {}) {
+            const int id = ++next;
+            socket.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}})
+                             .toJson(QJsonDocument::Compact)
+                         + '\n');
+            QElapsedTimer clock;
+            clock.start();
+            while (clock.elapsed() < 5000) {
+                while (socket.canReadLine()) {
+                    const QJsonObject message = QJsonDocument::fromJson(socket.readLine()).object();
+                    if (message.value("id").toInt() == id)
+                        return message;
+                }
+                QTest::qWait(5);
+            }
+            return QJsonObject{{"error", "no answer"}};
+        };
+        auto json = [](const char *text) { return QJsonDocument::fromJson(text).object(); };
+
+        QCOMPARE(ask("status").value("result").toObject().value("playing").toBool(), false);
+
+        // A patch lands in one undoable step, heard at once.
+        QJsonObject reply = ask("edit", json(R"({"patch": {"patterns": {"A": {"hat": "x.x.x.x.x.x.x.x."}}}})"));
+        QVERIFY2(!reply.contains("error"), qPrintable(reply.value("error").toString()));
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 3);
+        QCOMPARE(engine.song.patterns[0].steps[6][2].level, 3);
+        QVERIFY(backend.canUndo());
+        QCOMPARE(ask("song").value("result").toObject().value("song").toObject().value("patterns").toObject()
+                     .value("A").toObject().value("7").toString(),
+                 QString("x.x.x.x.x.x.x.x."));
+        QVERIFY(!ask("undo").contains("error"));
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 0);
+        QVERIFY(!ask("redo").contains("error"));
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 3);
+
+        // What's wrong is said, and nothing changes.
+        reply = ask("edit", json(R"({"patch": {"patterns": {"A": {"hat": "x.x"}}}})"));
+        QVERIFY(reply.value("error").toString().contains("16 steps"));
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 3);
+        QVERIFY(ask("fly").value("error").toString().contains("Unknown method"));
+
+        QVERIFY(!ask("select", json(R"({"pattern": "B", "pad": "clap"})")).contains("error"));
+        QCOMPARE(backend.editPattern(), 1);
+        QCOMPARE(backend.selectedPad(), 5);
+        QVERIFY(ask("wait", json(R"({"until": "bar"})")).value("error").toString().contains("Nothing is playing"));
+
+        reply = ask("transport", json(R"({"action": "play"})"));
+        QCOMPARE(reply.value("result").toObject().value("playing").toBool(), true);
+        QVERIFY(engine.calls.contains("play 0 1 0"));
+
+        // A wait for the bar is answered when the playhead comes to it.
+        const int id = ++next;
+        socket.write(QJsonDocument(QJsonObject{{"id", id}, {"method", "wait"}, {"params", json(R"({"until": "bar"})")}})
+                         .toJson(QJsonDocument::Compact)
+                     + '\n');
+        QTest::qWait(20);
+        emit engine.positionChanged(-1, 1, 5);
+        QTest::qWait(20);
+        QVERIFY(!socket.canReadLine());
+        emit engine.positionChanged(-1, 1, 0);
+        QTRY_VERIFY(socket.canReadLine());
+        const QJsonObject waited = QJsonDocument::fromJson(socket.readLine()).object();
+        QCOMPARE(waited.value("id").toInt(), id);
+        QCOMPARE(waited.value("result").toObject().value("status").toObject().value("position").toObject()
+                     .value("step").toInt(), 1);
+
+        // A wait for an edit is answered by the person's, not the agent's own.
+        const int editId = ++next;
+        socket.write(QJsonDocument(QJsonObject{{"id", editId}, {"method", "wait"}, {"params", json(R"({"until": "edit"})")}})
+                         .toJson(QJsonDocument::Compact)
+                     + '\n');
+        QTest::qWait(20);
+        backend.toggleStep(0, 0);
+        QTRY_VERIFY(socket.canReadLine());
+        QCOMPARE(QJsonDocument::fromJson(socket.readLine()).object().value("id").toInt(), editId);
+
+        QVERIFY(!ask("hit", json(R"({"pad": "A2", "level": 4})")).contains("error"));
+        QVERIFY(engine.calls.contains("hit 1 4"));
+        QVERIFY(ask("save").value("error").toString().contains("no file yet"));
+        QVERIFY(!ask("transport", json(R"({"action": "stop"})")).contains("error"));
+        QVERIFY(!backend.playing());
     }
 
     void banksStepsAndLanesFromTheWindow() {

@@ -101,6 +101,12 @@ public:
     bool exporting() const { return m_exporting; }
     QVariantMap message() const { return m_message; }
     const Song &song() const { return m_song; }
+    // Makes next the song in one undoable step, as an edit from outside the
+    // window (an agent's, over the control socket) is.
+    void editSong(const Song &next) {
+        m_coalesce.clear();
+        apply(next);
+    }
 
     // Steps.
     Q_INVOKABLE void toggleStep(int pad, int step);

@@ -68,3 +68,28 @@ endif()
 
 run(0 skill)
 run(0 --version)
+
+# With no window open, remote and mcp say so instead of hanging.
+set(ENV{XDG_RUNTIME_DIR} "${WORK}/runtime")
+file(MAKE_DIRECTORY "${WORK}/runtime")
+file(CHMOD "${WORK}/runtime" DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+run(1 remote status)
+if(NOT err MATCHES "No dole window is open")
+  message(FATAL_ERROR "remote with no window:\n${err}")
+endif()
+file(WRITE "${WORK}/mcp.in"
+  "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}\n"
+  "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+  "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
+  "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"status\",\"arguments\":{}}}\n"
+  "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"format\",\"arguments\":{}}}\n")
+execute_process(COMMAND ${DOLE} mcp INPUT_FILE "${WORK}/mcp.in" RESULT_VARIABLE code OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT code EQUAL 0 OR NOT out MATCHES "\"protocolVersion\":\"2025-06-18\"" OR NOT out MATCHES "\"name\":\"edit_song\""
+   OR NOT out MATCHES "No dole window is open" OR NOT out MATCHES "The .dole song format")
+  message(FATAL_ERROR "mcp:\n${out}\n${err}")
+endif()
+string(REGEX MATCHALL "\n" answers "${out}")
+list(LENGTH answers count)
+if(NOT count EQUAL 4)
+  message(FATAL_ERROR "mcp should answer the four requests and not the notification:\n${out}")
+endif()
