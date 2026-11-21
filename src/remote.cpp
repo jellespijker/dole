@@ -26,13 +26,17 @@ QByteArray line(const QJsonObject &message) {
 }
 
 QString noWindow() {
+    if (qEnvironmentVariableIsSet("DOLE_WINDOW"))
+        return "No dole window " + qEnvironmentVariable("DOLE_WINDOW") + " is open; DOLE_WINDOW names a window by its process id.";
     return "No dole window is open. Open one with dole open, or ask the person to.";
 }
 
-// The open windows' sockets, newest first.
+// The open windows' sockets, newest first; or, with DOLE_WINDOW set to a
+// window's process id (status says it), only that window's.
 QStringList sockets() {
-    const QFileInfoList found =
-        QDir(remoteDirectory()).entryInfoList({"*.sock"}, QDir::System | QDir::Files, QDir::Time);
+    const QString window = qEnvironmentVariable("DOLE_WINDOW");
+    const QFileInfoList found = QDir(remoteDirectory()).entryInfoList({window.isEmpty() ? "*.sock" : window + ".sock"},
+                                                                      QDir::System | QDir::Files, QDir::Time);
     QStringList paths;
     for (const QFileInfo &info : found)
         paths << info.absoluteFilePath();
@@ -164,7 +168,8 @@ QJsonObject RemoteServer::status() const {
                           {"members", others},
                           {"latency", m_jam->latency() < 0 ? QJsonValue() : QJsonValue(m_jam->latency())}};
     }
-    return {{"jam", jam},
+    return {{"window", QCoreApplication::applicationPid()},
+            {"jam", jam},
             {"file", m_backend->path().isEmpty() ? QJsonValue() : QJsonValue(m_backend->path())},
             {"dirty", m_backend->dirty()},
             {"playing", m_backend->playing()},

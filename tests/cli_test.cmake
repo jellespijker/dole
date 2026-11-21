@@ -77,6 +77,12 @@ run(1 remote status)
 if(NOT err MATCHES "No dole window is open")
   message(FATAL_ERROR "remote with no window:\n${err}")
 endif()
+set(ENV{DOLE_WINDOW} "999999")
+run(1 remote status)
+if(NOT err MATCHES "No dole window 999999")
+  message(FATAL_ERROR "remote should say which window it couldn't find:\n${err}")
+endif()
+unset(ENV{DOLE_WINDOW})
 file(WRITE "${WORK}/mcp.in"
   "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}\n"
   "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"

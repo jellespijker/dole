@@ -94,6 +94,7 @@ dole open [song.dole]
 | Ctrl+1 – 8, PgUp, PgDn | Edit pattern A to H (it takes over at the next bar) |
 | Ctrl+B | Make the pattern one to four bars |
 | Ctrl+M | The mixer |
+| Ctrl+J | Jam with dole on your other machines |
 | Ctrl+C, Ctrl+V | Copy and paste a pattern |
 | Ctrl+Delete | Clear the pattern |
 | Tab | Switch between the steps and the song |
@@ -171,7 +172,37 @@ From a script, `dole remote` sends the same requests:
 | `dole remote hit A1` | Strike a pad |
 | `dole remote wait bar` | Return at the next bar (`step`, `loop`, `stop`, `edit`) |
 | `dole remote undo`, `redo`, `save` | |
+| `dole remote jam search`, `jam laptop [song]`, `jam leave` | Find, join, or leave a jam |
 | `dole remote watch` | Print every step, edit, and start and stop as JSON lines |
+
+With several windows open, requests go to the newest; `DOLE_WINDOW=<pid>`
+picks another (`status` says each window's `window`).
+
+## Jamming across machines
+
+Ctrl+J (or Jam, top right) finds dole open on your other machines over
+[Tailscale](https://tailscale.com) and joins one of them in either of two ways:
+
+- **Play along**: each keeps its own song, on one beat. Tempo, play, and
+  stop are the jam's, and Space on any machine starts every dole on the
+  next bar.
+- **Share song**: the host's song replaces this one, and every edit, on any
+  machine, is heard on all of them. The pattern on screen is the same
+  everywhere, samples are copied across, and undo takes back only what was
+  done on that machine.
+
+Each machine plays through its own speakers. They agree on the beat by
+measuring their clocks against the host's, and each keeps its sound on it,
+so the same step is heard at the same moment, give or take a few
+milliseconds.
+
+dole listens on TCP port 47660 on the machine's tailnet address only, and
+lets in only your own devices, as Tailscale names them. A firewall has to
+let that port in on Tailscale; with ufw:
+
+```sh
+sudo ufw allow in on tailscale0 to any port 47660 proto tcp comment 'dole jam'
+```
 
 ## Building
 

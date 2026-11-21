@@ -60,6 +60,11 @@ use its tools; otherwise `dole remote`, which prints JSON and exits 0 or 1:
    the music gets there, to land a change on the beat or to notice the
    person editing.
 
+`dole remote jam search` finds dole on the person's other machines over
+Tailscale; `dole remote jam <machine>` joins one on its beat, and
+`jam <machine> song` shares its song, replacing this one, so ask first.
+With several windows open, `DOLE_WINDOW=<pid>` (status's `window`) picks one.
+
 Replies take you seconds, so play by writing steps, not by hitting pads in
 time. The song isn't saved until `dole remote save`; ask before saving
 over the person's file.
