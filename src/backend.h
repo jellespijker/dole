@@ -103,10 +103,20 @@ public:
     const Song &song() const { return m_song; }
     // Makes next the song in one undoable step, as an edit from outside the
     // window (an agent's, over the control socket) is.
-    void editSong(const Song &next) {
-        m_coalesce.clear();
-        apply(next);
+    void editSong(const Song &next, const QString &coalesce = {}) {
+        if (coalesce.isEmpty())
+            m_coalesce.clear();
+        apply(next, coalesce);
     }
+    // Makes next the song as someone else changed it, in a jam: not an undo
+    // of this window's, and undo here still takes back only what was done here.
+    void receiveSong(const Song &next);
+    // Asked just before playing starts, so a jam can start every dole on one
+    // beat.
+    void setAboutToPlay(std::function<void(int chainStart)> hook) { m_aboutToPlay = std::move(hook); }
+    // Starts afresh on someone else's song, as joining a jam to share it
+    // does: nothing to undo, and no file of its own until it's saved.
+    void adoptSong(const Song &song) { replaceSong(song, {}); }
 
     // Steps.
     Q_INVOKABLE void toggleStep(int pad, int step);
@@ -292,8 +302,16 @@ private:
     FilePicker *m_picker;
     Song m_song;
     Song m_saved;
-    QVector<Song> m_undo;
-    QVector<Song> m_redo;
+    // An edit, as the song was before and after it. Undo puts back before
+    // when nothing else has changed since; after someone in a jam changed
+    // the song too, it takes back only what the edit changed.
+    struct Change {
+        Song before, after;
+    };
+    Song reverted(const Song &from, const Song &to) const;
+    QVector<Change> m_undo;
+    QVector<Change> m_redo;
+    std::function<void(int)> m_aboutToPlay;
     QString m_coalesce;
     QString m_path;
 

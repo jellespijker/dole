@@ -90,6 +90,11 @@ void Renderer::setSounds(const std::array<SampleBuffer, kPads> &sounds) {
 }
 
 void Renderer::play(bool songMode, int pattern, int chainIndex) {
+    m_startSongMode = songMode;
+    m_startPattern = pattern;
+    m_startChain = chainIndex;
+    m_rate = 1;
+    m_drift = 0;
     m_songMode = songMode && !m_song.chain.isEmpty();
     if (m_songMode) {
         m_schedChain = qBound(0, chainIndex, int(m_song.chain.size()) - 1);
@@ -112,6 +117,57 @@ void Renderer::play(bool songMode, int pattern, int chainIndex) {
     m_chance = 1; // the same chances every time, so an export matches what was heard
     m_suppressed.clear();
     m_playing = true;
+}
+
+void Renderer::seek(double clock) {
+    if (!m_playing)
+        return;
+    // From the top, so the song's slot, the cued pattern, and the chances
+    // come out as they would have.
+    const int cued = m_cued;
+    const double rate = m_rate, drift = m_drift;
+    play(m_startSongMode, m_startPattern, m_startChain);
+    m_cued = cued;
+    m_rate = rate;
+    m_drift = drift;
+    if (clock <= 0) {
+        m_clock = clock;
+        return;
+    }
+    while (m_nextTick - 0.5 <= clock && !(m_stopAt >= 0 && m_nextTick >= m_stopAt))
+        schedule(m_nextTick++);
+    // What was due before the clock is past: only the last step counts, as
+    // the one being heard, with its lanes. A step due on the clock itself
+    // is still to come.
+    m_hits.erase(std::remove_if(m_hits.begin(), m_hits.end(), [clock](const Hit &hit) { return hit.time < clock - 1e-9; }),
+                 m_hits.end());
+    size_t heard = 0;
+    for (; heard < m_ticks.size() && m_ticks[heard].time < clock - 1e-9; ++heard)
+        m_heard = m_ticks[heard];
+    if (heard > 0) {
+        m_ticks.erase(m_ticks.begin(), m_ticks.begin() + qsizetype(heard));
+        applyLanes(m_heard);
+    }
+    m_clock = clock;
+}
+
+void Renderer::follow(double expected, int frames) {
+    if (!m_playing)
+        return;
+    const double error = expected - m_clock;
+    // Half a step out is heard as a stumble either way; better one jump.
+    if (std::abs(error) > 0.5) {
+        seek(expected);
+        m_drift = 0;
+        m_rate = 1;
+        return;
+    }
+    // Measuring when sound is heard is rough by a few milliseconds, so the
+    // difference is smoothed, and made up over about eight buffers at no
+    // more than 1% faster or slower: a change of tempo no one hears.
+    m_drift += (error - m_drift) * 0.2;
+    const double bufferSteps = std::max(1, frames) / stepFrames();
+    m_rate = 1 + std::clamp(m_drift / (8 * bufferSteps), -0.01, 0.01);
 }
 
 void Renderer::cue(int pattern) {
@@ -600,7 +656,7 @@ void Renderer::renderBlock(float *out, int frames, const StepCallback &onStep, c
                 m_nextRepeat -= 1e6;
         }
         if (m_playing) {
-            m_clock += stepsPerFrame;
+            m_clock += stepsPerFrame * m_rate;
             // The last step played: stop once its late hits are out too.
             if (m_stopAt >= 0 && m_clock >= m_stopAt && m_hits.empty())
                 halt();

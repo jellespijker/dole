@@ -12,6 +12,7 @@
 #include "song.h"
 
 class Backend;
+class Jam;
 class QLocalSocket;
 class QTimer;
 
@@ -35,6 +36,8 @@ public:
     // Listens in directory, or says why it can't.
     bool listen(const QString &directory, QString *error);
     QString path() const { return m_server.fullServerName(); }
+    // The jam this window is in, for the status.
+    void setJam(Jam *jam) { m_jam = jam; }
 
 private:
     struct Wait {
@@ -58,6 +61,7 @@ private:
     void edit(const Song &next);
 
     Backend *m_backend;
+    Jam *m_jam = nullptr;
     QLocalServer m_server;
     QList<Wait> m_waits;
     QSet<QLocalSocket *> m_watchers;

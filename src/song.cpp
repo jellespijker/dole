@@ -658,6 +658,46 @@ QJsonObject patchSongJson(const QJsonObject &song, const QJsonObject &patch) {
     return merged;
 }
 
+namespace {
+
+// deep is how many levels down a part that went is taken out piece by
+// piece: rows of a pattern and pads, never more, so a patch that removes
+// what one person had leaves what someone else added beside it.
+QJsonObject diffObjects(const QJsonObject &from, const QJsonObject &to, int deep) {
+    QJsonObject patch;
+    for (auto it = from.begin(); it != from.end(); ++it) {
+        if (to.contains(it.key()))
+            continue;
+        if (deep > 0 && it.value().isObject())
+            patch.insert(it.key(), diffObjects(it.value().toObject(), {}, deep - 1));
+        else
+            patch.insert(it.key(), QJsonValue::Null);
+    }
+    for (auto it = to.begin(); it != to.end(); ++it) {
+        const QJsonValue before = from.value(it.key());
+        if (before == it.value())
+            continue;
+        if (before.isObject() && it.value().isObject())
+            patch.insert(it.key(), diffObjects(before.toObject(), it.value().toObject(), std::max(0, deep - 1)));
+        else
+            patch.insert(it.key(), it.value());
+    }
+    return patch;
+}
+
+} // namespace
+
+QJsonObject diffSongJson(const QJsonObject &from, const QJsonObject &to) {
+    QJsonObject patch = diffObjects(from, to, 0);
+    // Patterns go row by row, and pads one by one.
+    for (const char *key : {"patterns", "pads"}) {
+        const int deep = QByteArray(key) == "patterns" ? 2 : 1;
+        if (patch.contains(key) && from.value(key).isObject())
+            patch.insert(key, diffObjects(from.value(key).toObject(), to.value(key).toObject(), deep));
+    }
+    return patch;
+}
+
 bool loadSong(const QString &path, Song *song, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {

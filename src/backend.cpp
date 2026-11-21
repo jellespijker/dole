@@ -279,10 +279,12 @@ QString Backend::fileName() const {
 void Backend::apply(const Song &next, const QString &coalesce) {
     if (next == m_song)
         return;
-    if (coalesce.isEmpty() || coalesce != m_coalesce) {
-        m_undo << m_song;
+    if (coalesce.isEmpty() || coalesce != m_coalesce || m_undo.isEmpty()) {
+        m_undo << Change{m_song, next};
         if (m_undo.size() > kMaxUndo)
             m_undo.removeFirst();
+    } else {
+        m_undo.last().after = next;
     }
     m_coalesce = coalesce;
     m_redo.clear();
@@ -1024,6 +1026,8 @@ void Backend::togglePlay(int chainStart) {
         stop();
         return;
     }
+    if (m_aboutToPlay)
+        m_aboutToPlay(chainStart);
     m_engine->play(m_songMode && !m_song.chain.isEmpty(), m_editPattern, chainStart);
     m_playing = true;
     emit playingChanged();
@@ -1214,11 +1218,24 @@ void Backend::exportTo(const QString &path) {
     }));
 }
 
+// The song now, with what turned from into to taken back: to's own song
+// when nothing else changed it since, or else only the keys the edit touched.
+Song Backend::reverted(const Song &from, const Song &to) const {
+    if (m_song == to)
+        return from;
+    const QJsonObject patch = diffSongJson(songToJson(to, {}), songToJson(from, {}));
+    Song result;
+    if (!songFromJson(patchSongJson(songToJson(m_song, {}), patch), {}, &result, nullptr))
+        return m_song;
+    return result;
+}
+
 void Backend::undo() {
     if (m_undo.isEmpty())
         return;
-    m_redo << m_song;
-    m_song = m_undo.takeLast();
+    const Change change = m_undo.takeLast();
+    m_redo << change;
+    m_song = reverted(change.before, change.after);
     m_coalesce.clear();
     sync();
 }
@@ -1226,9 +1243,18 @@ void Backend::undo() {
 void Backend::redo() {
     if (m_redo.isEmpty())
         return;
-    m_undo << m_song;
-    m_song = m_redo.takeLast();
+    const Change change = m_redo.takeLast();
+    m_undo << change;
+    m_song = reverted(change.after, change.before);
     m_coalesce.clear();
+    sync();
+}
+
+void Backend::receiveSong(const Song &next) {
+    if (next == m_song)
+        return;
+    m_coalesce.clear();
+    m_song = next;
     sync();
 }
 

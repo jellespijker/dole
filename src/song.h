@@ -184,6 +184,8 @@ bool songFromJson(const QJsonObject &json, const QString &baseDirectory, Song *s
 // ("7", "A7", or "hat"), and a row given as an object keeps the steps it
 // had, so {"roll": {"5": 3}} adds a roll without retyping the row.
 QJsonObject patchSongJson(const QJsonObject &song, const QJsonObject &patch);
+// The patch that turns one song's JSON into another's, for patchSongJson.
+QJsonObject diffSongJson(const QJsonObject &from, const QJsonObject &to);
 bool loadSong(const QString &path, Song *song, QString *error);
 bool saveSong(const QString &path, const Song &song, QString *error);
 

@@ -1,5 +1,6 @@
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalServer>
@@ -10,6 +11,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QRegularExpression>
+#include <QTcpServer>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -18,6 +20,7 @@
 #include <cmath>
 
 #include "backend.h"
+#include "jam.h"
 #include "remote.h"
 #include "theme.h"
 #include "translator.h"
@@ -195,8 +198,28 @@ public:
     }
     void setRack(const Rack &r) override { rack = r; }
     void locked(const std::function<void()> &work) override { work(); }
+    void setTimeline(const Timeline &t) override { timeline = t; }
     Rack rack;
+    Timeline timeline;
 };
+
+// A tailscale that says this machine is one of two of the user's devices,
+// each on its own loopback address, with a third that's someone else's.
+QString fakeTailscale(const QString &directory, const QString &self, const QString &selfAddress, const QString &peer,
+                      const QString &peerAddress) {
+    const QString path = directory + "/tailscale-" + self;
+    const QByteArray status = QJsonDocument(QJsonObject{
+        {"BackendState", "Running"},
+        {"Self", QJsonObject{{"HostName", self}, {"UserID", 7}, {"Online", true},
+                             {"TailscaleIPs", QJsonArray{selfAddress, "fd7a::1"}}}},
+        {"Peer", QJsonObject{
+            {"a", QJsonObject{{"HostName", peer}, {"UserID", 7}, {"Online", true}, {"TailscaleIPs", QJsonArray{peerAddress}}}},
+            {"b", QJsonObject{{"HostName", "stranger"}, {"UserID", 9}, {"Online", true},
+                              {"TailscaleIPs", QJsonArray{"127.0.0.3"}}}}}}}).toJson(QJsonDocument::Compact);
+    write(path, "#!/bin/sh\ncat <<'EOF'\n" + status + "\nEOF\n");
+    QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    return path;
+}
 
 // Answers every dialog with one path, or dismisses it when there is none.
 class FakePicker : public FilePicker {
@@ -962,6 +985,163 @@ private slots:
         QVERIFY(!backend.playing());
     }
 
+    void undoTakesBackOnlyWhatWasDoneHere() {
+        FakeEngine engine;
+        FakePicker picker;
+        Backend backend(&engine, &picker);
+        backend.newSong();
+        backend.toggleStep(0, 0);
+        // Someone else, in a jam, adds a hat.
+        Song theirs = backend.song();
+        theirs.patterns[0].steps[6][2].level = 3;
+        backend.receiveSong(theirs);
+        backend.undo();
+        QCOMPARE(backend.song().patterns[0].steps[0][0].level, 0);
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 3);
+        backend.redo();
+        QCOMPARE(backend.song().patterns[0].steps[0][0].level, kDefaultLevel);
+        QCOMPARE(backend.song().patterns[0].steps[6][2].level, 3);
+    }
+
+    void seekingPlaysOnAsIfFromTheTop() {
+        Song song = songFrom(R"({"dole": 3, "song": ["A", "B"], "patterns": {
+            "A": {"1": "x...............", "7": {"steps": "x...............", "lanes": {"volume": {"1": 0.2}}}},
+            "B": {"length": 32, "3": "x..............................."}}})");
+        Renderer renderer;
+        renderer.setSong(song);
+        renderer.play(true, 0, 0);
+        int chain = -1, pattern = -1, step = -1;
+        std::vector<float> out(2 * 64);
+        // Step 7 of B, in the song's second slot, is the one heard next.
+        renderer.seek(16 + 6);
+        renderer.render(out.data(), 1, [&](int c, int p, int s, int) { chain = c, pattern = p, step = s; });
+        QCOMPARE(chain, 1);
+        QCOMPARE(pattern, 1);
+        QCOMPARE(step, 6);
+        // Before the start it counts in.
+        renderer.seek(-2);
+        QCOMPARE(renderer.clock(), -2.0);
+        // A playhead a little behind catches up by playing a touch faster.
+        renderer.seek(3);
+        renderer.follow(3.02, 1024);
+        const double before = renderer.clock();
+        renderer.render(out.data(), 64);
+        QVERIFY(renderer.clock() - before > 64 / renderer.stepFrames());
+        renderer.follow(10, 1024);
+        QCOMPARE(renderer.clock(), 10.0);
+    }
+
+    void jamsKeepOneBeatAndShareASong() {
+        QTemporaryDir directory;
+        QTcpServer free;
+        QVERIFY(free.listen(QHostAddress("127.0.0.1")));
+        const quint16 port = free.serverPort();
+        free.close();
+
+        FakeEngine engineA, engineB;
+        FakePicker picker;
+        Backend alpha(&engineA, &picker), beta(&engineB, &picker);
+        alpha.newSong();
+        beta.newSong();
+        Jam jamA(&alpha, &engineA), jamB(&beta, &engineB);
+        jamA.setTailscale(fakeTailscale(directory.path(), "alpha", "127.0.0.1", "beta", "127.0.0.2"));
+        jamB.setTailscale(fakeTailscale(directory.path(), "beta", "127.0.0.2", "alpha", "127.0.0.1"));
+        jamA.setCacheDirectory(directory.filePath("cacheA"));
+        jamB.setCacheDirectory(directory.filePath("cacheB"));
+        jamA.setPort(port);
+        jamB.setPort(port);
+        jamA.start();
+        jamB.start();
+        QTRY_VERIFY(jamA.listening() && jamB.listening());
+
+        // Only the user's own devices are found, not someone else's.
+        jamB.search();
+        QTRY_VERIFY(!jamB.searching());
+        QCOMPARE(jamB.found().size(), 1);
+        QCOMPARE(jamB.found()[0].toMap().value("name").toString(), QString("alpha"));
+
+        // Playing along: one beat, each its own song.
+        jamB.join("127.0.0.1", "clock");
+        QTRY_COMPARE(jamB.role(), QString("joined"));
+        QTRY_COMPARE(jamA.role(), QString("hosting"));
+        QTRY_VERIFY(jamB.latency() >= 0);
+        QTRY_VERIFY(engineB.timeline.on);
+        QCOMPARE(jamA.members().size(), 1);
+
+        alpha.changeBpm(6);
+        QTRY_COMPARE(beta.bpm(), alpha.bpm());
+        beta.changeBpm(-2);
+        QTRY_COMPARE(alpha.bpm(), beta.bpm());
+        QTRY_COMPARE(engineA.timeline.bpm, double(beta.bpm()));
+
+        beta.togglePlay();
+        QTRY_VERIFY(alpha.playing());
+        QVERIFY(engineB.timeline.started);
+        QCOMPARE(engineA.timeline.startStep, engineB.timeline.startStep);
+        QCOMPARE(engineA.timeline.startStep % kSteps, 0);
+        // One beat: both timelines put the same step at the same moment.
+        const qint64 now = steadyMicroseconds();
+        QVERIFY(std::abs(engineA.timeline.stepAt(now) - engineB.timeline.stepAt(now)) < 0.05);
+        alpha.stop();
+        QTRY_VERIFY(!beta.playing());
+
+        // Another song stays its own.
+        beta.toggleStep(3, 3);
+        QTest::qWait(200);
+        QCOMPARE(alpha.song().patterns[0].steps[3][3].level, 0);
+
+        jamB.leave();
+        QTRY_COMPARE(jamA.role(), QString("alone"));
+        QVERIFY(!engineA.timeline.on);
+
+        // Sharing the song: beta takes alpha's, and edits go both ways.
+        alpha.toggleStep(0, 0);
+        jamB.join("127.0.0.1", "song");
+        QTRY_COMPARE(jamB.role(), QString("joined"));
+        QTRY_VERIFY(beta.song() == alpha.song());
+        QVERIFY(!beta.canUndo());
+
+        beta.toggleStep(6, 2);
+        QTRY_COMPARE(alpha.song().patterns[0].steps[6][2].level, kDefaultLevel);
+        alpha.toggleStep(2, 4);
+        QTRY_COMPARE(beta.song().patterns[0].steps[2][4].level, kDefaultLevel);
+
+        // At the same moment, on both: neither edit is lost.
+        alpha.toggleStep(1, 8);
+        beta.toggleStep(5, 12);
+        QTRY_VERIFY(alpha.song() == beta.song());
+        QCOMPARE(alpha.song().patterns[0].steps[1][8].level, kDefaultLevel);
+        QCOMPARE(alpha.song().patterns[0].steps[5][12].level, kDefaultLevel);
+
+        // Undo here takes back only what was done here.
+        beta.undo();
+        QTRY_COMPARE(alpha.song().patterns[0].steps[5][12].level, 0);
+        QCOMPARE(alpha.song().patterns[0].steps[1][8].level, kDefaultLevel);
+        QTRY_VERIFY(alpha.song() == beta.song());
+
+        // The pattern on screen is the same on both.
+        alpha.selectPattern(2);
+        QTRY_COMPARE(beta.editPattern(), 2);
+
+        // A sample on alpha's pad is copied to beta, which plays its copy.
+        const QString wav = directory.filePath("soul.wav");
+        QString error;
+        QVERIFY(writeWav(wav, QVector<float>(2 * 4800, 0.25f), &error));
+        alpha.setSample(16, wav);
+        QTRY_VERIFY(beta.song().pads[16].sample.startsWith(directory.filePath("cacheB")));
+        QVERIFY(QFileInfo::exists(beta.song().pads[16].sample));
+        QCOMPARE(alpha.song().pads[16].sample, wav);
+        // And edits to that pad on beta don't break alpha's path.
+        beta.changeTune(16, 2);
+        QTRY_COMPARE(alpha.song().pads[16].tune, 2);
+        QCOMPARE(alpha.song().pads[16].sample, wav);
+
+        // When the host goes, the member says so and plays on alone.
+        jamA.leave();
+        QTRY_COMPARE(jamB.role(), QString("alone"));
+        QCOMPARE(jamB.problem(), QString("ended"));
+    }
+
     void banksStepsAndLanesFromTheWindow() {
         FakeEngine engine;
         FakePicker picker;
@@ -1667,6 +1847,9 @@ private slots:
         qml.rootContext()->setContextProperty("translator", &translator);
         qml.rootContext()->setContextProperty("theme", &theme);
         qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
         qml.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!qml.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
@@ -1885,6 +2068,9 @@ private slots:
         qml.rootContext()->setContextProperty("translator", &translator);
         qml.rootContext()->setContextProperty("theme", &theme);
         qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
         qml.load(QUrl("qrc:/Main.qml"));
         auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
         QVERIFY(QTest::qWaitForWindowExposed(window));
@@ -1922,6 +2108,9 @@ private slots:
         qml.rootContext()->setContextProperty("translator", &translator);
         qml.rootContext()->setContextProperty("theme", &theme);
         qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
         qml.load(QUrl("qrc:/Main.qml"));
         auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());
         QVERIFY(QTest::qWaitForWindowExposed(window));
@@ -1987,6 +2176,9 @@ private slots:
         qml.rootContext()->setContextProperty("translator", &translator);
         qml.rootContext()->setContextProperty("theme", &theme);
         qml.rootContext()->setContextProperty("backend", &backend);
+        Jam jam(&backend, &engine);
+        jam.setTailscale(dir.path() + "/no-tailscale");
+        qml.rootContext()->setContextProperty("jam", &jam);
         qml.load(QUrl("qrc:/Main.qml"));
         QVERIFY(!qml.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(qml.rootObjects().first());

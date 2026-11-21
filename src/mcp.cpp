@@ -95,6 +95,19 @@ const char *kTools = R"json([
     "inputSchema": {"type": "object", "properties": {}}
   },
   {
+    "name": "jam",
+    "description": "Play along with dole on the person's other machines, found over Tailscale. With search, lists the doles found. With join (a machine's name from the search, or its address) and mode, joins it: clock keeps this window's own song on the jam's beat (shared tempo, play, and stop); song replaces this window's song with the host's and shares every edit, so ask the person before joining that way. With leave, leaves. With nothing, says how the jam is.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "search": {"type": "boolean"},
+        "join": {"type": "string"},
+        "mode": {"type": "string", "enum": ["clock", "song"]},
+        "leave": {"type": "boolean"}
+      }
+    }
+  },
+  {
     "name": "format",
     "description": "How a .dole song is written: tempo, pads and their settings, the kit on each pad, patterns, rows, rolls, chance, nudges, lanes, plugins, and the song chain. Read it before the first edit.",
     "inputSchema": {"type": "object", "properties": {}}
@@ -153,6 +166,10 @@ QJsonObject call(const QString &tool, const QJsonObject &arguments) {
         method = arguments.value("redo").toBool() ? "redo" : "undo";
     else if (tool == "save")
         method = "save";
+    else if (tool == "jam") {
+        method = "jam";
+        timeout = 15000;
+    }
     else if (tool == "wait") {
         method = "wait";
         timeout = (arguments.value("timeout").toInt(30) + 5) * 1000;

@@ -282,9 +282,10 @@ int remote(const QStringList &arguments) {
     Command command("remote", "Play the open window: dole remote <request> [JSON parameters, or - for stdin].", false);
     command.parser.addPositionalArgument("request",
                                          "status, song, edit, play, stop, record, select, hit, undo, redo, save, "
-                                         "wait, or watch",
+                                         "wait, jam, or watch",
                                          "<request>");
     command.parser.addPositionalArgument("parameters", "A JSON object, or - to read it from stdin", "[parameters]");
+    command.parser.addPositionalArgument("mode", "With jam <machine>: song to share its song", "[song]");
     command.parser.process(arguments);
     QString method = command.argument(1);
     const QString given = command.argument(2);
@@ -301,6 +302,14 @@ int remote(const QStringList &arguments) {
         params.insert("pad", given);
     } else if (method == "select" && !given.isEmpty() && !given.startsWith('{')) {
         params.insert(patternIndex(given) >= 0 ? "pattern" : "pad", given);
+    } else if (method == "jam" && !given.isEmpty() && !given.startsWith('{')) {
+        // dole remote jam search, jam leave, or jam <machine> [song].
+        if (given == "search" || given == "leave")
+            params.insert(given, true);
+        else {
+            params.insert("join", given);
+            params.insert("mode", command.argument(3) == "song" ? "song" : "clock");
+        }
     } else if (method == "wait" && !given.isEmpty() && !given.startsWith('{')) {
         params.insert("until", given);
     } else if (!given.isEmpty()) {
@@ -319,7 +328,7 @@ int remote(const QStringList &arguments) {
     }
     if (method == "edit")
         params.insert("base", QDir::currentPath());
-    const int timeout = method == "wait" ? (params.value("timeout").toInt(30) + 5) * 1000 : 10000;
+    const int timeout = method == "wait" ? (params.value("timeout").toInt(30) + 5) * 1000 : method == "jam" ? 15000 : 10000;
     const RemoteReply reply = remoteRequest(method, params, timeout);
     if (!reply.ok)
         return fail(reply.error);

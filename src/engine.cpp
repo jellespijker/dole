@@ -6,7 +6,13 @@
 #include <QIODevice>
 #include <QMediaDevices>
 #include <QTimer>
+#include <chrono>
 #include <cmath>
+
+qint64 steadyMicroseconds() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 namespace {
 
@@ -35,8 +41,13 @@ protected:
             bool repeat;
         };
         QVarLengthArray<Event, 8> events;
+        // What is already queued plays first, so this buffer is heard then.
+        const int queued = m_format.framesForBytes(m_sink->bufferSize() - m_sink->bytesFree());
         {
             QMutexLocker lock(&m_shared->mutex);
+            m_shared->latency = qint64(queued) * 1000000 / kRate;
+            if (m_shared->timeline.on && m_shared->timeline.started)
+                m_shared->renderer.follow(m_shared->expected(steadyMicroseconds() + m_shared->latency), frames);
             m_shared->renderer.render(
                 m_buffer.data(), frames,
                 [&](int chainIndex, int pattern, int step, int frame) {
@@ -55,7 +66,6 @@ protected:
 
         // A step is heard once what is already queued has played, so the
         // playhead moves then, not as the step is rendered.
-        const int queued = m_format.framesForBytes(m_sink->bufferSize() - m_sink->bytesFree());
         for (const Event &event : events) {
             const int delay = int((queued + event.frame) * 1000LL / kRate);
             QTimer::singleShot(delay, Qt::PreciseTimer, m_engine, [engine = m_engine, event] {
@@ -136,6 +146,23 @@ void AudioEngine::play(bool songMode, int pattern, int chainIndex) {
     open();
     QMutexLocker lock(&m_shared->mutex);
     m_shared->renderer.play(songMode, pattern, chainIndex);
+    // In a jam, from where the shared beat is: counting in to its start, or
+    // coming in where the others already are.
+    if (m_shared->timeline.on && m_shared->timeline.started)
+        m_shared->renderer.seek(m_shared->expected(steadyMicroseconds() + m_shared->latency));
+}
+
+void AudioEngine::setTimeline(const Timeline &timeline) {
+    QMutexLocker lock(&m_shared->mutex);
+    m_shared->timeline = timeline;
+    if (!timeline.on)
+        m_shared->renderer.unfollow();
+}
+
+double AudioEngine::heardClock() const {
+    QMutexLocker lock(&m_shared->mutex);
+    // The clock runs ahead of the speakers by what is queued.
+    return m_shared->renderer.clock() - double(m_shared->latency) * 1e-6 * kRate / m_shared->renderer.stepFrames();
 }
 
 void AudioEngine::cue(int pattern) {

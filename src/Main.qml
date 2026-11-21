@@ -34,7 +34,7 @@ ApplicationWindow {
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     // Keys go to the window only while no dialog is up.
     readonly property bool idle: !help.opened && !confirm.opened && !chop.opened && !chain.opened && !mixer.opened
-                                 && !lanePicker.opened
+                                 && !lanePicker.opened && !jamView.opened
     property int cursorStep: 0
     // -1 is the steps; 0 and up the selected track's lanes, when it is open.
     property int cursorLane: -1
@@ -223,6 +223,7 @@ ApplicationWindow {
     Shortcut { sequence: "L"; enabled: win.idle; onActivated: win.showLanes(backend.selectedPad) }
     Shortcut { sequence: "Shift+L"; enabled: win.idle; onActivated: lanePicker.openFor(backend.selectedPad) }
     Shortcut { sequence: "Ctrl+M"; enabled: win.idle; onActivated: mixer.open() }
+    Shortcut { sequence: "Ctrl+J"; enabled: win.idle; onActivated: jamView.open() }
 
     // Patterns.
     Shortcut { sequence: "Ctrl+C"; enabled: win.idle; onActivated: backend.copyPattern() }
@@ -253,7 +254,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+E"; enabled: win.idle; onActivated: backend.exportAudio() }
     Shortcut {
         sequence: "?"
-        enabled: !confirm.opened && !chop.opened && !chain.opened && !mixer.opened && !lanePicker.opened
+        enabled: !confirm.opened && !chop.opened && !chain.opened && !mixer.opened && !lanePicker.opened && !jamView.opened
         onActivated: help.opened ? help.close() : help.open()
     }
     Shortcut { sequences: ["Ctrl+Q"]; enabled: win.idle; onActivated: win.close() }
@@ -508,6 +509,15 @@ ApplicationWindow {
                         objectName: "mixerButton"
                         text: qsTr("Mixer")
                         onClicked: mixer.open()
+                    }
+                    // In a jam it says how many doles play together.
+                    Chip {
+                        objectName: "jamButton"
+                        readonly property bool jamming: jam.role === "hosting" || jam.role === "joined"
+                        text: jamming ? qsTr("Jam · %1").arg((jam.members.length + 1).toLocaleString(Qt.locale(translator.language), 'f', 0))
+                                      : qsTr("Jam")
+                        on: jamming
+                        onClicked: jamView.open()
                     }
                 }
             }
@@ -808,6 +818,7 @@ ApplicationWindow {
                     { keys: "Ctrl+← →", action: qsTr("The bar before or after") },
                     { keys: "Ctrl+B", action: qsTr("Make the pattern one to four bars") },
                     { keys: "Ctrl+M", action: qsTr("The mixer") },
+                    { keys: "Ctrl+J", action: qsTr("Jam with dole on your other machines") },
                     { keys: "Ctrl+1 – 8  PgUp PgDn", action: qsTr("Edit pattern A to H") },
                     { keys: "Ctrl+C  Ctrl+V", action: qsTr("Copy and paste a pattern") },
                     { keys: "Ctrl+Delete", action: qsTr("Clear the pattern") },
@@ -877,6 +888,16 @@ ApplicationWindow {
         id: chop
         objectName: "chop"
         rightToLeft: win.rightToLeft
+    }
+
+    JamView {
+        id: jamView
+        objectName: "jamView"
+        rightToLeft: win.rightToLeft
+        onShareRequested: (address) => {
+            jamView.close()
+            win.guard(() => jam.join(address, "song"))
+        }
     }
 
     ConfirmDialog {

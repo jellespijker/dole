@@ -50,6 +50,23 @@ public:
     // Starts at the top of a pattern: the song from one of its slots, or
     // one pattern looping.
     void play(bool songMode, int pattern, int chainIndex);
+    // Moves the playhead to a clock, in steps since playing started, as if
+    // it had played there: the song's slot, the patterns, and every track's
+    // own loop follow, while what is sounding rings on. Before 0, it counts
+    // in to the start.
+    void seek(double clock);
+    // Keeps the playhead on a clock kept elsewhere, as playing along with
+    // other doles does: expected is where it should be at the first of the
+    // frames rendered next. A small difference is made up by playing a
+    // little faster or slower over the next moments; a big one is a seek.
+    void follow(double expected, int frames);
+    // Plays at its own pace again.
+    void unfollow() {
+        m_rate = 1;
+        m_drift = 0;
+    }
+    double clock() const { return m_clock; }
+
     // Pattern looping moves to another pattern when this one ends, as an
     // MPC does, so the groove never trips.
     void cue(int pattern);
@@ -170,6 +187,11 @@ private:
 
     bool m_playing = false;
     bool m_songMode = false;
+    // How playing started, so a seek can play the same way from the top.
+    bool m_startSongMode = false;
+    int m_startPattern = 0, m_startChain = 0;
+    double m_rate = 1;        // how fast the clock runs, to keep to one elsewhere
+    double m_drift = 0;       // the difference from it, smoothed
     int m_cued = 0;
     double m_clock = 0; // in steps since playing started
     // What is scheduled, half a step ahead of what is heard.

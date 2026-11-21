@@ -13,6 +13,7 @@
 #include <cstdio>
 
 #include "backend.h"
+#include "jam.h"
 
 namespace {
 
@@ -152,7 +153,19 @@ QJsonObject RemoteServer::status() const {
     QJsonArray chain;
     for (int pattern : song.chain)
         chain.append(patternName(pattern));
-    return {{"file", m_backend->path().isEmpty() ? QJsonValue() : QJsonValue(m_backend->path())},
+    QJsonValue jam;
+    if (m_jam && m_jam->role() != "alone") {
+        QJsonArray others;
+        for (const QVariant &member : m_jam->members())
+            others.append(member.toMap().value("name").toString());
+        jam = QJsonObject{{"role", m_jam->role()},
+                          {"mode", m_jam->role() == "hosting" ? QJsonValue() : QJsonValue(m_jam->mode())},
+                          {"host", m_jam->role() == "hosting" ? m_jam->selfName() : m_jam->hostName()},
+                          {"members", others},
+                          {"latency", m_jam->latency() < 0 ? QJsonValue() : QJsonValue(m_jam->latency())}};
+    }
+    return {{"jam", jam},
+            {"file", m_backend->path().isEmpty() ? QJsonValue() : QJsonValue(m_backend->path())},
             {"dirty", m_backend->dirty()},
             {"playing", m_backend->playing()},
             {"recording", m_backend->recording()},
@@ -348,12 +361,59 @@ void RemoteServer::handle(QLocalSocket *socket, const QJsonObject &request) {
         });
         timer->start(timeout * 1000);
         m_waits << wait;
+    } else if (method == "jam") {
+        if (!m_jam) {
+            fail(socket, id, "This window can't jam.");
+            return;
+        }
+        auto found = [this] {
+            QJsonArray list;
+            for (const QVariant &dole : m_jam->found())
+                list.append(QJsonObject::fromVariantMap(dole.toMap()));
+            return list;
+        };
+        auto answer = [this, socket = QPointer<QLocalSocket>(socket), id, found] {
+            QJsonObject result{{"status", status()}, {"found", found()}};
+            if (!m_jam->problem().isEmpty())
+                result.insert("problem", m_jam->problem() + (m_jam->problemName().isEmpty() ? QString() : ": " + m_jam->problemName()));
+            reply(socket, id, result);
+        };
+        if (params.value("leave").toBool()) {
+            m_jam->leave();
+            answer();
+        } else if (params.contains("join")) {
+            // A machine by its name from the last search, or its address.
+            QString address = params.value("join").toString();
+            for (const QVariant &dole : m_jam->found())
+                if (dole.toMap().value("name").toString().compare(address, Qt::CaseInsensitive) == 0)
+                    address = dole.toMap().value("address").toString();
+            m_jam->join(address, params.value("mode").toString() == "song" ? "song" : "clock");
+            // Answered once it's in, or it's clear it won't be.
+            auto *watch = new QObject(this);
+            connect(m_jam, &Jam::changed, watch, [this, watch, answer] {
+                if (m_jam->role() == "joining" || (m_jam->role() == "joined" && m_jam->latency() < 0))
+                    return;
+                answer();
+                watch->deleteLater();
+            });
+        } else if (params.value("search").toBool()) {
+            m_jam->search();
+            auto *watch = new QObject(this);
+            connect(m_jam, &Jam::foundChanged, watch, [this, watch, answer] {
+                if (m_jam->searching())
+                    return;
+                answer();
+                watch->deleteLater();
+            });
+        } else {
+            answer();
+        }
     } else if (method == "watch") {
         m_watchers.insert(socket);
         reply(socket, id, status());
     } else {
         fail(socket, id, "Unknown method " + method
-                             + "; the methods are status, song, edit, transport, select, hit, undo, redo, save, wait, and watch.");
+                             + "; the methods are status, song, edit, transport, select, hit, undo, redo, save, wait, jam, and watch.");
     }
 }
 

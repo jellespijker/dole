@@ -14,6 +14,7 @@
 #include "backend.h"
 #include "cli.h"
 #include "engine.h"
+#include "jam.h"
 #include "portalfilepicker.h"
 #include "remote.h"
 #include "theme.h"
@@ -76,16 +77,23 @@ int main(int argc, char *argv[]) {
 
     // Agents and scripts play the window through dole remote and dole mcp.
     // Without the socket the window still works; it only can't be reached.
+    // Plays along with the doles on the user's other machines, over Tailscale.
+    Jam jam(&backend, &audio);
+    jam.start();
+
     RemoteServer remote(&backend);
+    remote.setJam(&jam);
     QString remoteError;
     if (!remote.listen(remoteDirectory(), &remoteError))
         fprintf(stderr, "dole: agents can't reach this window: %s\n", qPrintable(remoteError));
+
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("backend", &backend);
+    engine.rootContext()->setContextProperty("jam", &jam);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;

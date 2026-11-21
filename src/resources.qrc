@@ -11,6 +11,7 @@
         <file alias="ChainView.qml">ChainView.qml</file>
         <file alias="PluginBrowser.qml">PluginBrowser.qml</file>
         <file alias="Mixer.qml">Mixer.qml</file>
+        <file alias="JamView.qml">JamView.qml</file>
         <file alias="LanePicker.qml">LanePicker.qml</file>
         <file alias="DashedBox.qml">DashedBox.qml</file>
         <file alias="Stamp.qml">Stamp.qml</file>
